@@ -82,11 +82,16 @@ def main() -> int:
             with open(os.path.join(src, f"example{i}.rs"), "w", encoding="utf-8") as fh:
                 fh.write(render(block))
 
+        # CI sets RUSTFLAGS=-D warnings; examples bind values purely to show where data comes
+        # from, so an unused binding is expected and must not fail the build.
+        env = dict(os.environ)
+        env["RUSTFLAGS"] = env.get("RUSTFLAGS", "").replace("-D warnings", "").strip()
         result = subprocess.run(
             ["cargo", "build", "--quiet"],
             cwd=work,
             capture_output=True,
             text=True,
+            env=env,
         )
         if result.returncode != 0:
             print("README examples failed to compile:")

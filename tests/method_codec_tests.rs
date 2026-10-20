@@ -9,10 +9,13 @@
 //!   7z a -tzip -mm=LZMA      out.zip payload.txt
 //!   7z a -tzip -mm=PPMd      out.zip payload.txt
 
-use std::io::{Cursor, Read};
+use std::io::Cursor;
+#[allow(unused_imports)]
+use std::io::Read;
 use zipcore::{Archive, Compression, Error};
 
 /// The archive's single entry must decode to a repeating "Line N of a repetitive corpus" text.
+#[allow(dead_code)]
 fn check_decoded(archive_bytes: &[u8], expected_method: u16) {
     let mut archive =
         Archive::new(Cursor::new(archive_bytes.to_vec())).expect("the archive must parse");
@@ -58,11 +61,16 @@ fn reads_a_ppmd_entry() {
 /// rather than returning ciphertext-shaped garbage.
 #[test]
 fn without_the_feature_the_method_is_named_not_guessed() {
-    for (bytes, method, name) in [
-        (SEVEN_ZIP_DEFLATE64, 9u16, "Deflate64"),
-        (SEVEN_ZIP_LZMA, 14, "LZMA"),
-        (SEVEN_ZIP_PPMD, 98, "PPMd"),
-    ] {
+    // Only the fixtures whose feature is *off* are interesting here.
+    #[allow(unused_mut)]
+    let mut cases: Vec<(&[u8], u16, &str)> = Vec::new();
+    #[cfg(not(feature = "deflate64"))]
+    cases.push((SEVEN_ZIP_DEFLATE64, 9, "Deflate64"));
+    #[cfg(not(feature = "lzma"))]
+    cases.push((SEVEN_ZIP_LZMA, 14, "LZMA"));
+    #[cfg(not(feature = "ppmd"))]
+    cases.push((SEVEN_ZIP_PPMD, 98, "PPMd"));
+    for (bytes, method, name) in cases {
         let supported = Compression::from_method(method).is_supported();
         if supported {
             continue;
@@ -111,6 +119,7 @@ fn a_corrupted_lzma_payload_is_an_error() {
     assert!(!decoded_ok, "a corrupted payload must not decode cleanly");
 }
 
+#[allow(dead_code)]
 pub(crate) const SEVEN_ZIP_DEFLATE64: &[u8] = &[
     80, 75, 3, 4, 21, 0, 0, 0, 9, 0, 155, 109, 84, 93, 114, 139, 211, 16, 98, 4, 0, 0, 194, 116, 0,
     0, 11, 0, 0, 0, 112, 97, 121, 108, 111, 97, 100, 46, 116, 120, 116, 173, 217, 61, 174, 13, 0,
@@ -176,6 +185,7 @@ pub(crate) const SEVEN_ZIP_DEFLATE64: &[u8] = &[
     75, 5, 6, 0, 0, 0, 0, 1, 0, 1, 0, 93, 0, 0, 0, 139, 4, 0, 0, 0, 0,
 ];
 
+#[allow(dead_code)]
 pub(crate) const SEVEN_ZIP_LZMA: &[u8] = &[
     80, 75, 3, 4, 63, 0, 2, 0, 14, 0, 155, 109, 84, 93, 114, 139, 211, 16, 26, 2, 0, 0, 194, 116,
     0, 0, 11, 0, 0, 0, 112, 97, 121, 108, 111, 97, 100, 46, 116, 120, 116, 25, 1, 5, 0, 93, 0, 128,
@@ -212,6 +222,7 @@ pub(crate) const SEVEN_ZIP_LZMA: &[u8] = &[
     93, 0, 0, 0, 67, 2, 0, 0, 0, 0,
 ];
 
+#[allow(dead_code)]
 pub(crate) const SEVEN_ZIP_PPMD: &[u8] = &[
     80, 75, 3, 4, 63, 0, 0, 0, 98, 0, 155, 109, 84, 93, 114, 139, 211, 16, 97, 2, 0, 0, 194, 116,
     0, 0, 11, 0, 0, 0, 112, 97, 121, 108, 111, 97, 100, 46, 116, 120, 116, 7, 0, 76, 31, 58, 55,
@@ -277,6 +288,7 @@ fn rejects_an_absurd_lzma_dictionary() {
 }
 
 /// A method-95 (XZ) archive produced by 7-Zip 25.01.
+#[allow(dead_code)]
 pub(crate) const SEVEN_ZIP_XZ: &[u8] = &[
     80, 75, 3, 4, 20, 0, 0, 0, 95, 0, 170, 113, 84, 93, 20, 167, 65, 140, 16, 2, 0, 0, 42, 58, 0,
     0, 11, 0, 0, 0, 112, 97, 121, 108, 111, 97, 100, 46, 116, 120, 116, 253, 55, 122, 88, 90, 0, 0,
