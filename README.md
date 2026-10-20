@@ -85,7 +85,8 @@ Measured against `zip` 9.0.5 on the same machine, release build, `lto = true`,
 | Open + list 1000 entries | 124 µs | 167 µs | **26% faster** |
 | `read_entry`, whole entry | 1.41 ms | 1.60 ms | **12% faster** |
 | Write, Deflate L6 | 625 ms | 289 ms | the codec, not the container — see below |
-| Extract 100 entries to disk | 234 ms (315 MiB/s) | 110 ms | temp-file + rename on every write |
+| `by_name`, 10 000-entry archive | 98 ns per lookup | linear scan | name index, built lazily |
+| Extract 500 small entries | 200 ms | 110 ms | see [Extraction speed](#extraction-speed-vs-crash-tidiness) |
 
 **The Deflate gap is the compressor, not the container.** Forced onto `flate2`'s pure-Rust
 backend — which *is* `miniz_oxide`, the codec used here — the two are indistinguishable (1.01×).
@@ -128,10 +129,39 @@ let limits = ExtractLimits {
     max_entries: Some(1_000),
     max_total_bytes: Some(64 * 1024 * 1024),
     overwrite: Overwrite::Never,
+    ..ExtractLimits::default()
 };
 let report = archive.extract_all_with_limits(std::path::Path::new("out"), &limits)?;
 println!("{} written", report.written.len());
 ```
+
+### Extraction speed vs. crash-tidiness
+
+By default each entry is written to a temporary file and renamed into place, so a failed entry
+(bad CRC-32, a limit hit, an interrupted write) leaves **nothing** at the destination instead of a
+truncated file that looks complete.
+
+That `rename` is not free: on Windows it costs more than creating and writing a small file. For an
+archive of many small entries it is most of the extraction time, so it is configurable:
+
+```rust
+use zipcore::{Archive, AtomicWrite, ExtractLimits};
+
+let mut archive = Archive::open("many-small-files.zip")?;
+let limits = ExtractLimits {
+    atomic_write: AtomicWrite::Disabled,   // ~30% faster, but a failure can leave partial files
+    ..ExtractLimits::default()
+};
+archive.extract_all_with_limits(std::path::Path::new("out"), &limits)?;
+```
+
+| Mode | 500 small entries | Guarantee |
+| --- | --- | --- |
+| `AtomicWrite::Enabled` (default) | ~200 ms | a failed entry leaves no file behind |
+| `AtomicWrite::Disabled` | ~143 ms | an interrupted write can leave a partial file |
+
+The default is the safe one, deliberately: correctness should not be what you get only when you
+remember to ask.
 
 ### Hostile archives
 
@@ -376,11 +406,11 @@ implementation — the AE-2 zero-CRC rule was found exactly that way.
 ## Known gaps
 
 - No non-seekable sink, so streaming to a socket or stdout is impossible.
-- `by_name` is a linear scan; reading many entries by name from a large archive is O(N·M).
 - A fresh compressor is allocated per entry, and a normally-written entry costs three seeks.
 - The 4 GiB write path is covered by fixtures, not by an actual multi-gigabyte write.
-- Extraction is slower than `zip` (~2×) because each entry is written to a temporary file and
-  renamed after verifying, and because the destination is canonicalised to refuse escaped writes.
+- Extraction is slower than `zip` when `AtomicWrite::Enabled` (the default) is in use, because
+  every entry pays a `rename` and the destination is canonicalised to refuse escaped writes.
+  `AtomicWrite::Disabled` narrows the gap to ~1.3×.
 - The tar writer emits plain `ustar` only: names beyond 255 bytes, non-ASCII names and
   out-of-range timestamps are refused rather than mangled. No links, xattrs or sparse files.
 - `Error` is neither `Clone` nor `PartialEq`, which makes classifying errors in a caller awkward.

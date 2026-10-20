@@ -152,6 +152,7 @@ fn api3_limits_cap_total_bytes_across_entries() {
         max_entries: None,
         max_total_bytes: Some(25 * 1024),
         overwrite: zipcore::Overwrite::Replace,
+        atomic_write: zipcore::AtomicWrite::Enabled,
     };
     let result = a.extract_all_with_limits(&dir, &limits);
     assert!(result.is_err(), "the aggregate budget must be enforced");
@@ -218,6 +219,7 @@ fn api5_overwrite_policy_can_refuse_to_clobber() {
         max_entries: None,
         max_total_bytes: None,
         overwrite: zipcore::Overwrite::Never,
+        atomic_write: zipcore::AtomicWrite::Enabled,
     };
     let r = a.extract_all_with_limits(&dir, &limits);
     assert!(
@@ -261,4 +263,72 @@ fn api6_add_symlink_round_trips_as_a_symlink() {
 fn api6_add_symlink_refuses_an_empty_target() {
     let mut w = ZipWriter::new(Cursor::new(Vec::new())).unwrap();
     assert!(w.add_symlink("link", "", &FileOptions::default()).is_err());
+}
+
+// ---------------------------------------------------------------------------------------
+// API-7: atomic vs direct extraction
+// ---------------------------------------------------------------------------------------
+
+#[test]
+fn api7_atomic_is_the_default() {
+    assert_eq!(
+        ExtractLimits::default().atomic_write,
+        zipcore::AtomicWrite::Enabled,
+        "the safe behaviour must be what you get without asking"
+    );
+}
+
+#[test]
+fn api7_direct_mode_still_writes_correct_content() {
+    let dir = temp_dir("api7-direct");
+    let mut w = ZipWriter::new(Cursor::new(Vec::new())).unwrap();
+    w.add_file("a.txt", b"direct content", &FileOptions::stored())
+        .unwrap();
+    let buf = w.finish().unwrap().into_inner();
+
+    let mut a = Archive::new(Cursor::new(buf)).unwrap();
+    let limits = ExtractLimits {
+        atomic_write: zipcore::AtomicWrite::Disabled,
+        ..ExtractLimits::default()
+    };
+    a.extract_all_with_limits(&dir, &limits).unwrap();
+    assert_eq!(std::fs::read(dir.join("a.txt")).unwrap(), b"direct content");
+    // No stray temporary files either way.
+    let leftovers: Vec<_> = std::fs::read_dir(&dir)
+        .unwrap()
+        .flatten()
+        .filter(|e| e.file_name().to_string_lossy().contains("tmp"))
+        .collect();
+    assert!(leftovers.is_empty(), "temp files leaked: {leftovers:?}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn api7_atomic_mode_leaves_nothing_when_the_crc_fails() {
+    // Corrupt the payload so the entry fails verification after it has been written out.
+    let dir = temp_dir("api7-crc");
+    let mut w = ZipWriter::new(Cursor::new(Vec::new())).unwrap();
+    w.add_file(
+        "bad.bin",
+        b"payload that will be corrupted",
+        &FileOptions::stored(),
+    )
+    .unwrap();
+    let mut buf = w.finish().unwrap().into_inner();
+
+    // Flip a byte inside the stored payload (local header is 30 + name + extra).
+    let name_len = "bad.bin".len();
+    let payload_at = 30 + name_len;
+    buf[payload_at] ^= 0xFF;
+
+    let mut a = Archive::new(Cursor::new(buf)).unwrap();
+    // Atomic mode: the failed entry must leave no file behind.
+    let r = a.extract_all_with_limits(&dir, &ExtractLimits::default());
+    assert!(r.is_err(), "corruption must be detected");
+    let files: Vec<_> = std::fs::read_dir(&dir).unwrap().flatten().collect();
+    assert!(
+        files.is_empty(),
+        "atomic mode must leave nothing behind, found {files:?}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
 }

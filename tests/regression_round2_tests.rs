@@ -328,6 +328,7 @@ fn m7_the_total_byte_limit_counts_bytes_actually_written() {
         max_entries: None,
         max_total_bytes: Some(1024),
         overwrite: zipcore::Overwrite::Replace,
+        atomic_write: zipcore::AtomicWrite::Enabled,
     };
     let result = archive.extract_all_with_limits(&dir, &limits);
     let written: u64 = std::fs::read_dir(&dir)

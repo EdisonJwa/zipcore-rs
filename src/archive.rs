@@ -95,6 +95,32 @@ pub struct ExtractLimits {
     ///
     /// Defaults to [`Overwrite::Replace`], matching ordinary unzip behaviour.
     pub overwrite: Overwrite,
+    /// Whether to write each entry to a temporary file and rename it into place.
+    ///
+    /// Defaults to [`AtomicWrite::Enabled`], which means a failed entry (bad CRC-32, a limit hit,
+    /// an interrupted write) leaves *nothing* at the destination rather than a truncated file
+    /// that looks complete.
+    ///
+    /// That guarantee costs a `rename` per entry, which is the single largest cost of extracting
+    /// many small files on Windows — measurably more than the decompression itself. Set
+    /// [`AtomicWrite::Disabled`] when throughput matters more than crash-tidiness, and accept
+    /// that an interrupted extraction can leave partial files behind.
+    pub atomic_write: AtomicWrite,
+}
+
+/// Whether extraction writes through a temporary file and renames it into place.
+///
+/// The trade is real and measured: on Windows one `rename` costs roughly 190 us, against roughly
+/// 100 us to create and write a small file at all. For an archive of many small entries that is
+/// most of the extraction time, which is why it is configurable rather than unconditional.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
+pub enum AtomicWrite {
+    /// Write to a temporary sibling and rename on success. Nothing partial is left behind.
+    #[default]
+    Enabled,
+    /// Write straight to the destination path.
+    Disabled,
 }
 
 /// What extraction does when the destination path already exists.
@@ -290,6 +316,12 @@ pub struct Archive<R: Read + Seek> {
     base_offset: i64,
     options: ReadOptions,
     file_len: u64,
+    /// Lazily built `name -> first index` map.
+    ///
+    /// `by_name` was a linear scan, so looking up many names in a large archive was O(N*M). It is
+    /// only built when a by-name lookup actually happens, so an archive that is only ever read by
+    /// index never pays for it.
+    name_index: std::cell::OnceCell<std::collections::HashMap<String, usize>>,
     /// Absolute offset at which the central directory starts, after any offset correction.
     /// `ZipWriter::new_append` seeks here so the old records are overwritten rather than
     /// accumulated.
@@ -423,6 +455,7 @@ impl<R: Read + Seek> Archive<R> {
             base_offset,
             options,
             file_len,
+            name_index: std::cell::OnceCell::new(),
             cd_offset: effective_cd_offset,
         })
     }
@@ -467,7 +500,15 @@ impl<R: Read + Seek> Archive<R> {
 
     /// Index of the first entry whose decode name is exactly `name`.
     pub fn index_for_name(&self, name: &str) -> Option<usize> {
-        self.entries.iter().position(|e| e.name == name)
+        let index = self.name_index.get_or_init(|| {
+            let mut map = std::collections::HashMap::with_capacity(self.entries.len());
+            for (position, entry) in self.entries.iter().enumerate() {
+                // First occurrence wins; later duplicates are reachable by index.
+                map.entry(entry.name.clone()).or_insert(position);
+            }
+            map
+        });
+        index.get(name).copied()
     }
 
     /// Iterate over entry names.
@@ -611,7 +652,7 @@ impl<R: Read + Seek> Archive<R> {
     /// On Unix the recorded permission bits are restored after the contents are written,
     /// masked to `0o777` so an archive cannot install a setuid binary.
     pub fn extract_entry(&mut self, index: usize, dest_dir: &Path) -> Result<PathBuf> {
-        self.extract_entry_with_budget(index, dest_dir, None, None)
+        self.extract_entry_with_budget(index, dest_dir, None, None, AtomicWrite::Enabled)
             .map(|(path, _)| path)
     }
 
@@ -623,6 +664,7 @@ impl<R: Read + Seek> Archive<R> {
         dest_dir: &Path,
         budget: Option<(u64, u64)>,
         canonical_root: Option<&Path>,
+        atomic: AtomicWrite,
     ) -> Result<(PathBuf, u64)> {
         let entry = match self.entries.get(index) {
             Some(e) => e.clone(),
@@ -668,10 +710,17 @@ impl<R: Read + Seek> Archive<R> {
         }
         let mut source = self.by_index_with(index, options)?;
 
-        // Write beside the destination and rename on success, so a failed entry leaves nothing
-        // that looks like a complete file.
-        let temp_path = temp_sibling(&out_path, index);
-        let mut sink = File::create(&temp_path).map_err(Error::Io)?;
+        // Atomic mode writes beside the destination and renames on success, so a failed entry
+        // leaves nothing that looks like a complete file. Direct mode skips the rename, which is
+        // most of the per-entry cost on Windows.
+        let (temp_path, final_path) = match atomic {
+            AtomicWrite::Enabled => {
+                let temp = temp_sibling(&out_path, index);
+                (Some(temp.clone()), temp)
+            }
+            AtomicWrite::Disabled => (None, out_path.clone()),
+        };
+        let mut sink = File::create(&final_path).map_err(Error::Io)?;
         let mut writer = BudgetedSink {
             inner: &mut sink,
             written: 0,
@@ -687,7 +736,7 @@ impl<R: Read + Seek> Archive<R> {
         drop(sink);
 
         if let Err(io_error) = copy_result {
-            let _ = fs::remove_file(&temp_path);
+            let _ = fs::remove_file(&final_path);
             // The budget, not the archive, may be what stopped us; report that precisely.
             if let Some(limit) = limit_hit {
                 return Err(Error::LimitExceeded {
@@ -697,19 +746,22 @@ impl<R: Read + Seek> Archive<R> {
             return Err(source.take_terminal_error().unwrap_or(Error::Io(io_error)));
         }
         if let Err(error) = flushed {
-            let _ = fs::remove_file(&temp_path);
+            let _ = fs::remove_file(&final_path);
             return Err(Error::Io(error));
         }
         // Verification runs at end of stream, so an error here means the payload is bad.
         if let Err(error) = source.verify_to_end() {
-            let _ = fs::remove_file(&temp_path);
+            let _ = fs::remove_file(&final_path);
             return Err(error);
         }
         drop(source);
 
-        if let Err(error) = fs::rename(&temp_path, &out_path) {
-            let _ = fs::remove_file(&temp_path);
-            return Err(Error::Io(error));
+        // Only the atomic path renames; the direct path already wrote to its final name.
+        if let Some(temp_path) = &temp_path {
+            if let Err(error) = fs::rename(temp_path, &out_path) {
+                let _ = fs::remove_file(temp_path);
+                return Err(Error::Io(error));
+            }
         }
         apply_recorded_mode(&out_path, &entry)?;
         Ok((out_path, written))
@@ -827,8 +879,13 @@ impl<R: Read + Seek> Archive<R> {
                     }
                 }
             }
-            let (path, written) =
-                self.extract_entry_with_budget(index, dest_dir, budget, canonical_root.as_deref())?;
+            let (path, written) = self.extract_entry_with_budget(
+                index,
+                dest_dir,
+                budget,
+                canonical_root.as_deref(),
+                limits.atomic_write,
+            )?;
             report.total_bytes = report.total_bytes.saturating_add(written);
             report.written.push(path);
         }

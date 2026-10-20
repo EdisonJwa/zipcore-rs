@@ -6,6 +6,27 @@ All notable changes to this project are documented here. The format follows
 
 Because this crate is pre-1.0, the minor version is where breaking changes land.
 
+## [0.5.0] - 2026-10-20
+
+### Added
+
+- **`ExtractLimits::atomic_write`** (`AtomicWrite::{Enabled,Disabled}`). Extraction still writes
+  through a temporary file and renames by default, but the rename is now optional: on Windows it
+  costs more than creating the file at all, which made it most of the extraction time for archives
+  of many small entries. Measured **200 ms → 143 ms** for 500 small entries (~30%).
+- `scripts/check-readme-examples.py` is now exercised by CI on every push.
+
+### Changed
+
+- **`by_name` / `index_for_name` are no longer a linear scan.** A name index is built once, lazily,
+  on the first by-name lookup, so archives read only by index never pay for it. For a
+  10,000-entry archive a lookup went from **16.6 us to 98 ns** (169x), and a miss from 3.8 us to
+  ~7 ns.
+
+### Fixed
+
+- Nothing user-visible beyond the above; the 0.4.0 MSRV repair stands.
+
 ## [0.4.0] - 2026-10-20
 
 ### Fixed
@@ -130,6 +151,7 @@ First published release.
   features.
 - A ustar `TarWriter`, including `tar.zst` via `TarWriter::new_zstd`.
 
+[0.5.0]: https://github.com/EdisonJwa/zipcore-rs/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/EdisonJwa/zipcore-rs/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/EdisonJwa/zipcore-rs/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/EdisonJwa/zipcore-rs/compare/v0.1.0...v0.2.0

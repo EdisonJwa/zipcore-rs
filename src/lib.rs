@@ -99,7 +99,7 @@ mod util;
 mod write;
 
 pub use crate::archive::{
-    Archive, ExtractLimits, ExtractReport, Overwrite, RawEntryReader, ReadOptions,
+    Archive, AtomicWrite, ExtractLimits, ExtractReport, Overwrite, RawEntryReader, ReadOptions,
     MAX_IN_MEMORY_ENTRY,
 };
 pub use crate::entry::{Compression, Entry};
