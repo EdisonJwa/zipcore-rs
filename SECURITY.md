@@ -38,14 +38,19 @@ prepared together.
    charged against bytes actually produced rather than declared. No allocation is sized from an
    archive field.
 3. **No writes outside the extraction directory.** Entry names are sanitised (absolute paths,
-   drive prefixes, `..`, alternate data streams, Windows device names including trailing-dot
-   and trailing-space spellings), and extraction canonicalises the destination to refuse a write
-   whose parent resolves outside it — which also covers a pre-existing junction or symlink.
-4. **No corrupt data returned as valid.** CRC-32 and declared size are verified; a failed entry
+   drive prefixes, `..`, alternate data streams, and Windows device names in every spelling the
+   platform resolves — `CON`/`NUL`/`COM1`-`COM9`, `COM0`/`LPT0`, `CONIN$`/`CONOUT$`/`CLOCK$`, and
+   the superscript-digit variants), and extraction canonicalises the destination to refuse a write
+   whose parent resolves outside it. That last check is what covers a pre-existing junction or
+   symlink: the *name* is harmless and the redirect exists only on disk.
+4. **No unbounded allocation from a declared size.** The LZMA dictionary size is declared inside
+   the stream, so it is attacker-controlled; it is capped at 256 MiB, independently of the
+   decoder's own memory limit.
+5. **No corrupt data returned as valid.** CRC-32 and declared size are verified; a failed entry
    stays failed rather than decaying into a clean end of stream. A failed extraction leaves no
    file behind, because the payload is written to a temporary and renamed only after it
    verifies.
-5. **No silent data loss on write.** A failed write latches the writer and reports the original
+6. **No silent data loss on write.** A failed write latches the writer and reports the original
    cause on every later call. Starting a fresh archive over a non-empty sink is refused.
 
 ### Explicitly out of scope

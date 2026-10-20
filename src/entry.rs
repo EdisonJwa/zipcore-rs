@@ -27,6 +27,12 @@ pub enum Compression {
     Xz,
     /// Method 98: PPMd, variant I revision 1.
     Ppmd,
+    /// Method 1: the DOS-era "shrink" coder. Named, never decoded.
+    Shrink,
+    /// Methods 2-5: the "reduce" family. Named, never decoded.
+    Reduce,
+    /// Method 6: "implode". Named, never decoded.
+    Implode,
     /// Any other method id.
     Other(u16),
 }
@@ -43,6 +49,9 @@ impl Compression {
             METHOD_ZSTD => Compression::Zstd,
             METHOD_XZ => Compression::Xz,
             METHOD_PPMD => Compression::Ppmd,
+            1 => Compression::Shrink,
+            2..=5 => Compression::Reduce,
+            6 => Compression::Implode,
             other => Compression::Other(other),
         }
     }
@@ -58,6 +67,10 @@ impl Compression {
             Compression::Zstd => METHOD_ZSTD,
             Compression::Xz => METHOD_XZ,
             Compression::Ppmd => METHOD_PPMD,
+            Compression::Shrink => 1,
+            // Methods 2-5 collapse into one variant, so only the first id can round-trip.
+            Compression::Reduce => 2,
+            Compression::Implode => 6,
             Compression::Other(id) => id,
         }
     }
@@ -73,6 +86,9 @@ impl Compression {
             Compression::Zstd => "zstd",
             Compression::Xz => "xz",
             Compression::Ppmd => "ppmd",
+            Compression::Shrink => "shrink",
+            Compression::Reduce => "reduce",
+            Compression::Implode => "implode",
             Compression::Other(_) => "unknown",
         }
     }
@@ -89,9 +105,12 @@ impl Compression {
             Compression::Deflate64 => cfg!(feature = "deflate64"),
             Compression::Lzma => cfg!(feature = "lzma"),
             Compression::Ppmd => cfg!(feature = "ppmd"),
-            // XZ (method 95) is not a ZIP method in practice, and `Other` is by definition
-            // something this build has no decoder for.
-            Compression::Xz | Compression::Other(_) => false,
+            Compression::Xz => cfg!(feature = "lzma"),
+            // The legacy DOS methods and `Other` have no decoder in any build.
+            Compression::Shrink
+            | Compression::Reduce
+            | Compression::Implode
+            | Compression::Other(_) => false,
         }
     }
 
@@ -108,6 +127,9 @@ impl Compression {
             | Compression::Lzma
             | Compression::Xz
             | Compression::Ppmd
+            | Compression::Shrink
+            | Compression::Reduce
+            | Compression::Implode
             | Compression::Other(_) => false,
         }
     }

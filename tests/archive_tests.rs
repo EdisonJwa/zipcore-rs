@@ -296,52 +296,69 @@ fn refuses_encrypted_entries() {
 #[test]
 fn refuses_unimplemented_compression_methods() {
     let mut b = ZipBuilder::new();
-    // 95 is XZ, which this crate does not decode in any configuration, so the test means the same
-    // thing regardless of which codec features happen to be enabled.
-    b.add_unknown_method("archive.xz", b"payload", 95);
+    // Method 6 is "implode", a DOS-era method this crate does not decode in any configuration,
+    // so the test means the same thing regardless of which codec features are enabled.
+    b.add_unknown_method("archive.implode", b"payload", 6);
     let mut archive = open(b.finish());
 
-    assert_eq!(archive.entries()[0].compression(), Compression::Xz);
-    assert_eq!(archive.entries()[0].compression().name(), "xz");
+    assert_eq!(archive.entries()[0].compression().name(), "implode");
     assert!(!archive.entries()[0].compression().is_supported());
 
     match archive.by_index(0) {
         Err(Error::UnsupportedCompression { method, entry }) => {
-            assert_eq!(method, 95);
-            assert_eq!(entry, "archive.xz");
+            assert_eq!(method, 6);
+            assert_eq!(entry, "archive.implode");
         }
         other => panic!("expected UnsupportedCompression, got {other:?}"),
     }
 
     // The message names the method, so a caller does not have to look up method ids.
     let message = archive.by_index(0).unwrap_err().to_string();
-    assert!(message.contains("xz"), "message was: {message}");
+    assert!(message.contains("implode"), "message was: {message}");
 }
 
 #[test]
 fn a_method_with_no_name_is_reported_by_number() {
     let mut b = ZipBuilder::new();
-    // 6 is implode, a legacy method this crate does not name or implement.
-    b.add_unknown_method("legacy.zip", b"payload", 6);
+    // 200 is not a method anyone has defined, so it stays an unnamed number.
+    b.add_unknown_method("legacy.zip", b"payload", 200);
     let mut archive = open(b.finish());
 
-    assert_eq!(archive.entries()[0].compression(), Compression::Other(6));
+    assert_eq!(archive.entries()[0].compression(), Compression::Other(200));
     assert_eq!(archive.entries()[0].compression().name(), "unknown");
     assert!(archive.by_index(0).is_err());
 }
 
 #[test]
 fn method_ids_round_trip_through_the_enum() {
-    for method in [0u16, 8, 9, 12, 14, 93, 95, 98, 6, 1234] {
+    // `Reduce` spans methods 2-5 and therefore cannot round-trip them individually; it is
+    // excluded here and covered by its own assertion below.
+    for method in [0u16, 1, 6, 8, 9, 12, 14, 93, 95, 98, 1234] {
         let compression = Compression::from_method(method);
         assert_eq!(compression.method_id(), method, "method {method}");
     }
+    // The reduce family collapses to one variant, so only its first id round-trips.
+    assert_eq!(Compression::from_method(3), Compression::Reduce);
+    assert_eq!(Compression::Reduce.method_id(), 2);
+
+    // The legacy DOS methods are named (so an error can say "implode", not "method 6") but never
+    // decodable or writable.
+    for legacy in [
+        Compression::Shrink,
+        Compression::Reduce,
+        Compression::Implode,
+    ] {
+        assert!(!legacy.is_supported(), "{}", legacy.name());
+        assert!(!legacy.is_writable(), "{}", legacy.name());
+        assert_ne!(legacy.name(), "unknown");
+    }
+
     // Stored and Deflate are always available, in both directions.
     assert!(Compression::Stored.is_supported() && Compression::Stored.is_writable());
     assert!(Compression::Deflate.is_supported() && Compression::Deflate.is_writable());
 
-    // XZ (method 95) is never supported: it is not a method that appears in real ZIP files.
-    assert!(!Compression::Xz.is_supported());
+    // XZ (method 95) follows the same feature as LZMA, and is never writable.
+    assert_eq!(Compression::Xz.is_supported(), cfg!(feature = "lzma"));
     assert!(!Compression::Xz.is_writable());
     assert_ne!(Compression::Xz.name(), "unknown");
 

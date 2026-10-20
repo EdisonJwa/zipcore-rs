@@ -512,13 +512,28 @@ fn build_codec<'a, R: Read + Seek>(
             };
             // The declared size lets the decoder stop exactly at the end, which matters inside a
             // container where the stream has no end marker of its own.
+            // The dictionary size is declared *inside* the stream, so it is attacker-controlled.
+            // Anything beyond a sane ceiling is rejected rather than handed to the decoder, so a
+            // 20-byte entry cannot ask for a multi-gigabyte allocation.
+            const MAX_LZMA_DICTIONARY: u32 = 256 * 1024 * 1024;
+            if dict_size > MAX_LZMA_DICTIONARY {
+                return Err(Error::malformed(format!(
+                    "LZMA entry declares a {dict_size}-byte dictionary, above the \
+                     {MAX_LZMA_DICTIONARY}-byte limit"
+                )));
+            }
             let params = lzma_rs::decompress::raw::LzmaParams::new(
                 properties,
                 dict_size,
                 Some(entry.uncompressed_size),
             );
-            let decoder = lzma_rs::decompress::raw::LzmaDecoder::new(params, None)
-                .map_err(|error| Error::malformed(format!("LZMA decoder: {error:?}")))?;
+            // The memlimit is a second, independent backstop: even if the dictionary check above
+            // were bypassed, the decoder refuses to allocate more than this.
+            let decoder = lzma_rs::decompress::raw::LzmaDecoder::new(
+                params,
+                Some(MAX_LZMA_DICTIONARY as usize),
+            )
+            .map_err(|error| Error::malformed(format!("LZMA decoder: {error:?}")))?;
             // Collect into a buffer: lzma-rs drives its own output loop rather than exposing a
             // Read, and the entry size is already bounded by the caller's limit.
             let mut out = Vec::new();
@@ -526,6 +541,20 @@ fn build_codec<'a, R: Read + Seek>(
             decoder.decompress(&mut input, &mut out).map_err(|error| {
                 Error::malformed(format!("LZMA entry did not decode: {error:?}"))
             })?;
+            Ok(Box::new(std::io::Cursor::new(out)))
+        }
+        #[cfg(feature = "lzma")]
+        Compression::Xz => {
+            reader
+                .seek(SeekFrom::Start(data_start))
+                .map_err(Error::Io)?;
+            let bounded = Bounded::new(reader, entry.compressed_size);
+            let mut input = std::io::BufReader::new(bounded);
+            // Method 95 is XZ. It is not a method ZIP archives in the wild actually use, but the
+            // id exists and decoding it costs one caller, so it is here rather than a "no".
+            let mut out = Vec::new();
+            lzma_rs::xz_decompress(&mut input, &mut out)
+                .map_err(|error| Error::malformed(format!("XZ entry did not decode: {error:?}")))?;
             Ok(Box::new(std::io::Cursor::new(out)))
         }
         #[cfg(feature = "ppmd")]

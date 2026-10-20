@@ -7,10 +7,64 @@
 use std::path::PathBuf;
 
 /// Windows device names that alias to a device regardless of extension.
-const RESERVED: [&str; 22] = [
-    "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8",
-    "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
-];
+///
+/// `CON`, `PRN`, `AUX` and `NUL` are the classic four, and `CONIN$`/`CONOUT$` are the console
+/// handles. `COM1`-`COM9` and `LPT1`-`LPT9` are the numbered ports; `COM0` and `LPT0` are also
+/// reserved by Win32 even though they are rarely usable. The trailing `$` and the numbered forms
+/// are matched without it, so a name like `CONIN$` cannot slip through as "not a device".
+const RESERVED_STEMS: [&str; 4] = ["CON", "PRN", "AUX", "NUL"];
+/// Console/clock handles that are devices only *with* their trailing `$`.
+const RESERVED_DOLLAR: [&str; 3] = ["CONIN", "CONOUT", "CLOCK"];
+const RESERVED_PORTS: [&str; 2] = ["COM", "LPT"];
+
+/// Whether a filename stem names a Windows device.
+///
+/// DOS reserved `COM1`-`COM9` and `LPT1`-`LPT9`. Win32 additionally treats `COM0`, `LPT0`, the
+/// superscript digits `¹²³` and a trailing `$` as part of the same namespace, which is how
+/// `CONIN$` and `com¹` reach a device. Rejecting a slightly wider set than strictly necessary is
+/// the safe direction here: the cost is refusing an exotic but harmless name.
+fn is_windows_device_name(stem: &str) -> bool {
+    // `$` only matters for the console handles: `CONIN$` is a device, `CONIN` is a file.
+    let (core, had_dollar) = match stem.strip_suffix('$') {
+        Some(rest) => (rest, true),
+        None => (stem, false),
+    };
+
+    // Superscript digits map to the same device numbers as their ASCII forms.
+    let normalized: String = core
+        .chars()
+        .map(|c| match c {
+            '\u{00b9}' => '1',
+            '\u{00b2}' => '2',
+            '\u{00b3}' => '3',
+            other => other.to_ascii_uppercase(),
+        })
+        .collect();
+
+    // `.` and whitespace are stripped before this point by the caller, so compare directly.
+    if RESERVED_STEMS
+        .iter()
+        .any(|reserved| normalized == *reserved)
+    {
+        return true;
+    }
+
+    // `CONIN$`, `CONOUT$` and `CLOCK$` are devices; the same names without `$` are ordinary files.
+    if had_dollar
+        && RESERVED_DOLLAR
+            .iter()
+            .any(|reserved| normalized == *reserved)
+    {
+        return true;
+    }
+
+    // Port names: a prefix from the list followed by exactly one digit.
+    RESERVED_PORTS.iter().any(|prefix| {
+        normalized
+            .strip_prefix(prefix)
+            .is_some_and(|rest| rest.len() == 1 && rest.as_bytes()[0].is_ascii_digit())
+    })
+}
 
 /// Strip the trailing dots and spaces that Win32 silently ignores.
 ///
@@ -81,7 +135,7 @@ pub(crate) fn safe_relative_path(name: &str) -> Result<PathBuf, &'static str> {
             Some(i) => &trimmed[..i],
             None => trimmed,
         };
-        if RESERVED.iter().any(|r| r.eq_ignore_ascii_case(stem)) {
+        if is_windows_device_name(stem) {
             return Err("reserved device name");
         }
         out.push(part);
@@ -169,5 +223,68 @@ mod tests {
         assert!(safe_relative_path("NUL").is_err());
         assert!(safe_relative_path("con.txt").is_err());
         assert!(safe_relative_path("console.txt").is_ok());
+    }
+}
+
+#[cfg(test)]
+mod device_name_tests {
+    use super::*;
+
+    /// Every spelling Win32 may resolve to a device must be refused.
+    #[test]
+    fn windows_device_spellings_are_all_rejected() {
+        for name in [
+            "CON",
+            "con",
+            "Con",
+            "CON.txt",
+            "con.tar.gz",
+            "PRN",
+            "AUX",
+            "NUL",
+            "nul.log",
+            "COM1",
+            "com9",
+            "COM0",
+            "LPT1",
+            "lpt0",
+            // `$`-suffixed console handles
+            "CONIN$",
+            "CONOUT$",
+            "CLOCK$",
+            "conin$",
+            // superscript device digits
+            "com\u{00b9}",
+            "com\u{00b2}",
+            "lpt\u{00b3}",
+            // inside a directory
+            "dir/NUL.txt",
+        ] {
+            assert!(
+                safe_relative_path(name).is_err(),
+                "{name:?} should be refused as a device name"
+            );
+        }
+    }
+
+    /// Ordinary names that merely start like a device must still work.
+    #[test]
+    fn similar_but_ordinary_names_are_allowed() {
+        for name in [
+            "console.log",
+            "content.txt",
+            "null.txt",
+            "print.pdf",
+            "COM10", // two digits: not the reserved namespace
+            "common/x",
+            "auxiliary.rs",
+            "clock.rs",
+            "nulify",
+        ] {
+            assert!(
+                safe_relative_path(name).is_ok(),
+                "{name:?} is an ordinary name and should be accepted"
+            );
+        }
     }
 }

@@ -824,3 +824,63 @@ fn m1_a_tar_sink_failure_poisons_the_writer() {
         "a corrupt tar stream must not be blessed as success"
     );
 }
+
+/// A junction (Windows) or symlink (Unix) already sitting inside the destination must not let an
+/// entry be written outside it. This is the attack name sanitisation cannot see: the *name* is
+/// harmless, and the redirect only exists on disk.
+#[test]
+fn m8b_pre_existing_junction_cannot_redirect_a_write() {
+    let base = std::env::temp_dir().join(format!("zc-junction-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    let dest = base.join("dest");
+    let outside = base.join("outside");
+    std::fs::create_dir_all(&dest).unwrap();
+    std::fs::create_dir_all(&outside).unwrap();
+    let victim = outside.join("victim.txt");
+    std::fs::write(&victim, b"ORIGINAL CONTENT").unwrap();
+
+    // File symlinks need a privilege on Windows; directory junctions do not.
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(&victim, dest.join("pwned.txt")).unwrap();
+    }
+    #[cfg(windows)]
+    {
+        let status = std::process::Command::new("cmd")
+            .args(["/C", "mklink", "/J"])
+            .arg(dest.join("sub"))
+            .arg(&outside)
+            .status()
+            .unwrap();
+        if !status.success() {
+            // The environment will not let us create the junction; nothing to test.
+            let _ = std::fs::remove_dir_all(&base);
+            return;
+        }
+    }
+
+    let mut w = ZipWriter::new(std::io::Cursor::new(Vec::new())).unwrap();
+    #[cfg(unix)]
+    w.add_file("pwned.txt", b"ATTACKER", &FileOptions::stored())
+        .unwrap();
+    #[cfg(windows)]
+    w.add_file("sub/victim.txt", b"ATTACKER", &FileOptions::stored())
+        .unwrap();
+    let bytes = w.finish().unwrap().into_inner();
+
+    let mut archive = Archive::new(std::io::Cursor::new(bytes)).unwrap();
+    let error = archive
+        .extract_all_with_limits(&dest, &ExtractLimits::default())
+        .expect_err("writing through a junction must be refused");
+    let message = error.to_string();
+    assert!(
+        message.contains("outside the destination"),
+        "the refusal should name the reason: {message}"
+    );
+    assert_eq!(
+        std::fs::read(&victim).unwrap(),
+        b"ORIGINAL CONTENT",
+        "the file outside the destination must be untouched"
+    );
+    let _ = std::fs::remove_dir_all(&base);
+}

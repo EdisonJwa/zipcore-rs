@@ -26,23 +26,58 @@ cargo add zipcore
 
 ---
 
-## Why this crate
+## What this is actually good for
 
-`zip` is the mature, feature-complete choice, and for most projects it is the right one. This
-crate exists for the cases where its size is the problem:
+Let me be straight about the competition, because it decides whether you should use this at all.
 
-| | zipcore | `zip` 9.x |
-| --- | --- | --- |
-| Direct dependencies (default) | **3** | 10+ |
-| `unsafe` code | **none** (`#![forbid(unsafe_code)]`) | 29 sites |
-| MSRV (default build) | **1.70** | 1.88 |
+**If you want the most complete ZIP library, use [`zip`](https://crates.io/crates/zip).** It is
+mature, has 300M downloads, and covers things this crate does not (AES-NI-accelerated paths, a
+`Sync` writer, a wider method matrix in some builds). For most projects it is the right answer.
 
-A ZIP parser reads attacker-controlled bytes, so its dependency tree is attack surface. That is
-the trade this crate makes: fewer moving parts, no `unsafe`, an older compiler — in exchange for a
-narrower feature set.
+This crate is worth considering for a narrower set of reasons, and they are not all equally strong:
 
-What you give up is listed honestly under [What is not supported](#what-is-not-supported). If you
-need a compression method this crate cannot read, `zip` supports more of them.
+### Where it genuinely wins
+
+**The dependency tree is small and auditable.** Three direct dependencies by default
+(`miniz_oxide`, `crc32fast`, `getrandom`), all pure Rust, no C toolchain, no build script. `zip`
+pulls 10+ by default, including a C build for zstd. A ZIP parser reads attacker-controlled bytes,
+so its dependency tree *is* attack surface; this is the reason to care.
+
+**There is no `unsafe`.** `#![forbid(unsafe_code)]`, enforced by a CI job rather than promised.
+`zip` has 29 `unsafe` blocks. For code in the position of parsing hostile input, that difference
+matters to some auditors.
+
+**The MSRV is much lower.** 1.70 for the default build, where `zip` requires 1.88. If you are
+pinned to an older toolchain, this crate works and `zip` does not.
+
+**Behaviour is specified, not incidental.** Every limit has a documented default, every failure
+mode is a named error variant, and the hostile-input posture is written down in
+[SECURITY.md](SECURITY.md) and tested. Extraction refuses zip-slip names, refuses to write through
+a pre-existing junction or symlink, never leaves a partial file behind by default, and never
+returns corrupt data as valid.
+
+### Where it is honest-but-weaker
+
+**Feature coverage is close, but `zip` is still ahead.** This crate reads and writes Stored and
+Deflate, reads Deflate64 (9), LZMA (14), XZ (95), PPMd (98), zstd (93) and bzip2 (12), writes zstd,
+and does both legacy ZipCrypto and WinZip AES-128/192/256 in both directions. What it does *not*
+do: legacy shrink/implode/reduce, truly spanned (multi-floppy) archives, and writing any of the
+decode-only methods.
+
+**Performance is a wash, and slightly behind on writing.** Store-only container work is at parity
+or faster (reads 20–35% faster); Deflate compression is slower unless you enable
+`deflate-zlib-rs`, because `zip` uses `zlib-rs` by default. Extraction is slower by default because
+of the atomic-write guarantee, which you can turn off. See [Performance](#performance) for measured
+numbers rather than adjectives.
+
+**It is young.** 300M downloads versus a few hundred. No track record, one maintainer, a 0.x
+version number that reserves the right to break.
+
+### The honest summary
+
+Choose `zip` unless you specifically need a small auditable dependency tree, no `unsafe`, or an
+older compiler. Those are real constraints in supply-chain-sensitive, embedded, or long-term-support
+contexts — and if you have one of them, this crate was built for you.
 
 ---
 
@@ -66,7 +101,7 @@ need a compression method this crate cannot read, `zip` supports more of them.
 
 Reported as named errors, never guessed at or silently mis-decoded:
 
-- XZ (method 95), legacy shrink/implode/reduce decoders.
+- Decoding the legacy shrink/reduce/implode methods (1-6). They are recognised and named in errors, but not decoded.
 - Truly *spanned* archives (floppy-era, entry crosses volumes). Split volumes are supported.
 
 ---
@@ -417,7 +452,7 @@ invalidate this table.
 
 ## Testing
 
-229 tests across six feature configurations, plus doctests. CI runs the matrix on Linux, including
+255 tests across the feature configurations, plus doctests, including a deterministic mutation suite. CI runs the matrix on Linux, including
 a dedicated job per MSRV row, clippy with `-D warnings`, rustfmt, a documentation build, a check
 that every README example compiles, a check that no `unsafe` appears in `src/`, and a time-boxed
 fuzz run.
@@ -434,7 +469,7 @@ implementation — the AE-2 zero-CRC rule was found exactly that way.
 
 | Environment | Result |
 | --- | --- |
-| Rust 1.95, all feature combinations | 228 tests pass |
+| Rust 1.95, all features | 255 tests pass |
 | Rust 1.70 default build | builds clean |
 | `cargo clippy --all-targets --all-features -D warnings` | clean |
 | `cargo fmt --check` | clean |
@@ -458,13 +493,9 @@ implementation — the AE-2 zero-CRC rule was found exactly that way.
 
 ## Planned
 
-| Item | Cost | Notes |
-| --- | --- | --- |
-| Non-seekable sink | moderate | needs data descriptors and a rewrite of the header-patching path |
-| xz decode | 1 | method 95 is not a ZIP method in practice; no archive needs it |
-
-LZMA is the one to watch: its dictionary size is declared *in the stream*, so a decoder that trusts
-it can be made to allocate a great deal. That needs an explicit ceiling before it lands.
+Nothing from the original roadmap is outstanding: the non-seekable sink, XZ decode, LZMA,
+Deflate64 and PPMd all landed. What remains are quality items rather than missing features, and
+they are listed under [Known gaps](#known-gaps) instead of being presented as a plan.
 
 ## Examples
 

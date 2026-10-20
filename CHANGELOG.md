@@ -6,6 +6,37 @@ All notable changes to this project are documented here. The format follows
 
 Because this crate is pre-1.0, the minor version is where breaking changes land.
 
+## [0.8.0] - 2026-10-20
+
+Review pass: security hardening, the last roadmap items, and a rewritten positioning.
+
+### Security
+
+- **LZMA dictionary size is now capped.** It is declared inside the stream, so an archive could
+  ask for an arbitrarily large allocation from a tiny entry. Capped at 256 MiB, with the decoder's
+  own memory limit set independently as a backstop. (No exploit was demonstrated — the decoder
+  happened to tolerate the value — but an unbounded attacker-controlled size is a defect whether
+  or not it is currently reachable.)
+- **Windows device-name detection widened** to the spellings Win32 actually resolves: `COM0` and
+  `LPT0`, the superscript digits (`com¹`), and the `$`-suffixed console handles `CONIN$`,
+  `CONOUT$`, `CLOCK$`. The previous list was the classic 22 names and missed these.
+- Added a regression test proving a **pre-existing junction cannot redirect a write** outside the
+  extraction directory. The existing check already blocked it; nothing tested it.
+- Added **mutation tests**: 5,500 deterministic corruptions of valid archives (including encrypted
+  ones) with every reader path exercised, asserting no panic. Runs on stable, in under a second.
+
+### Added
+
+- **XZ (method 95) decoding**, completing the method matrix. Verified against a 7-Zip archive.
+
+### Changed
+
+- **README positioning rewritten.** The previous version led with being a reaction to a `zip`
+  mass-yank that has since been resolved, and overstated the feature gap. It now states plainly
+  when to use `zip` instead, separates genuine advantages (3 dependencies, no `unsafe`, 1.70 MSRV,
+  specified behaviour) from honest weaknesses (narrower methods, slightly slower writes, young
+  project), and recommends `zip` for most users.
+
 ## [0.7.0] - 2026-10-20
 
 ### Added
@@ -193,6 +224,7 @@ First published release.
   features.
 - A ustar `TarWriter`, including `tar.zst` via `TarWriter::new_zstd`.
 
+[0.8.0]: https://github.com/EdisonJwa/zipcore-rs/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/EdisonJwa/zipcore-rs/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/EdisonJwa/zipcore-rs/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/EdisonJwa/zipcore-rs/compare/v0.4.0...v0.5.0
