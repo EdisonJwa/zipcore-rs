@@ -14,3 +14,8 @@ Thumbs.db
 
 # Internal analysis, not published
 /ANALYSIS.md
+
+# fuzz build artefacts
+/fuzz/target
+/fuzz/corpus
+/fuzz/artifacts

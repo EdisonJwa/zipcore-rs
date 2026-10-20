@@ -1,0 +1,178 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    # Weekly, so a yanked or regressed dependency is caught even with no commits.
+    - cron: "0 4 * * 1"
+
+env:
+  CARGO_TERM_COLOR: always
+  # Fail the build if a warning is introduced rather than letting it accumulate.
+  RUSTFLAGS: -D warnings
+
+jobs:
+  # The main matrix: every feature combination that promises to work on stable.
+  test:
+    name: test
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        features:
+          - ""
+          - "zstd"
+          - "bzip2"
+          - "deflate-zlib-rs"
+          - "aes-crypto"
+          - "zstd,bzip2,deflate-zlib-rs,aes-crypto"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: features-${{ matrix.features }}
+      - name: Build and test
+        run: |
+          if [ -z "${{ matrix.features }}" ]; then
+            cargo test --verbose
+          else
+            cargo test --verbose --features "${{ matrix.features }}"
+          fi
+
+  # The README quotes these numbers, so they are checked rather than assumed.
+  msrv:
+    name: MSRV
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - toolchain: "1.70.0"
+            features: ""
+            label: "default"
+          - toolchain: "1.75.0"
+            features: "deflate-zlib-rs"
+            label: "deflate-zlib-rs"
+          - toolchain: "1.85.1"
+            features: "zstd"
+            label: "zstd"
+          - toolchain: "1.85.1"
+            features: "bzip2"
+            label: "bzip2"
+          - toolchain: "1.89.0"
+            features: "aes-crypto"
+            label: "aes-crypto"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ matrix.toolchain }}
+      - name: Remove the lockfile so resolution runs on the old Cargo
+        # A v4 Cargo.lock is unreadable to cargo 1.70, and the point of this job is that
+        # dependency *resolution* still succeeds on the old toolchain.
+        run: rm -f Cargo.lock
+      - name: Build (${{ matrix.label }})
+        run: |
+          if [ -z "${{ matrix.features }}" ]; then
+            cargo build --lib
+          else
+            cargo build --lib --features "${{ matrix.features }}"
+          fi
+
+  clippy:
+    name: clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo clippy --all-targets --all-features -- -D warnings
+
+  fmt:
+    name: rustfmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - run: cargo fmt --all -- --check
+
+  docs:
+    name: docs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build docs with warnings denied
+        env:
+          RUSTDOCFLAGS: -D warnings
+        run: cargo doc --no-deps --all-features
+      - name: Check every README example compiles
+        run: python3 scripts/check-readme-examples.py
+
+  # `#![forbid(unsafe_code)]` is a headline claim; prove it rather than trusting the attribute.
+  no-unsafe:
+    name: no unsafe
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Reject any `unsafe` in shipping code
+        run: |
+          # Match the keyword and its common forms, not prose: a comment saying "unsafe names
+          # are refused" must not fail the build, while `unsafe fn` and `unsafe {` must.
+          if grep -rn --include='*.rs' -E '\bunsafe\s*(fn|impl|trait|extern|\{)' src/; then
+            echo "::error::unsafe code found in src/"
+            exit 1
+          fi
+          echo "no unsafe code in src/"
+
+  # The default build must stay at its advertised dependency count.
+  deps:
+    name: dependency budget
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Count default-build dependencies
+        run: |
+          # Direct dependencies only: the README's claim is about what *we* choose to depend on.
+          count=$(cargo tree --edges normal --depth 1 2>/dev/null \
+            | tail -n +2 | sed 's/[├└─ ]*//' | sed 's/ v[0-9].*//' | sort -u | wc -l)
+          echo "default-build direct dependencies: $count"
+          # The README says three (miniz_oxide, crc32fast, getrandom). A new one should be a
+          # deliberate decision with a README update, not an accident.
+          if [ "$count" -gt 3 ]; then
+            echo "::error::default build grew to $count dependencies; update the README and this budget deliberately"
+            exit 1
+          fi
+
+  fuzz-smoke:
+    name: fuzz (short run)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: fuzz
+      - name: Install cargo-fuzz
+        run: cargo install cargo-fuzz --locked
+      - name: Fuzz the reader for 60 seconds
+        # A time-boxed run, not a proof: it catches gross panics and regressions. Real fuzzing
+        # runs longer on a schedule.
+        run: cargo fuzz run read_archive -- -max_total_time=60 -rss_limit_mb=4096
+      - name: Upload any crash artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-crash
+          path: fuzz/artifacts/

@@ -1568,7 +1568,9 @@ fn version_made_by(version: u16) -> u16 {
 /// Used for the ZipCrypto header and the WinZip AES salt. A weak source here would be a real
 /// defect, so it comes from the OS rather than a userspace generator.
 fn fill_random(buf: &mut [u8]) -> Result<()> {
-    getrandom::fill(buf).map_err(|error| {
+    // `getrandom` 0.2 spells this `getrandom`; 0.4 renamed it to `fill`. 0.2 is kept deliberately:
+    // it is the newest release that does not require Rust 1.85, and the crate advertises 1.70.
+    getrandom::getrandom(buf).map_err(|error| {
         Error::malformed(format!("the system random source is unavailable: {error}"))
     })
 }

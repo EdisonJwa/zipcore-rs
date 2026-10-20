@@ -1,0 +1,27 @@
+﻿[package]
+name = "zipcore-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+zipcore = { path = ".." }
+
+[[bin]]
+name = "read_archive"
+path = "fuzz_targets/read_archive.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "roundtrip"
+path = "fuzz_targets/roundtrip.rs"
+test = false
+doc = false
+
+[profile.release]
+debug = 1

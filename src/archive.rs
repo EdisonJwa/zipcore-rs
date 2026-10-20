@@ -200,6 +200,50 @@ impl<W: Write> Write for BudgetedSink<'_, W> {
         Ok(n)
     }
 
+    fn write_all(&mut self, buf: &[u8]) -> io::Result<()> {
+        // `io::copy` prefers `write_all` because it can move a whole buffer at once. The default
+        // implementation would loop through `write`, adding a per-chunk bounds check and a
+        // `saturating_sub` for every few kilobytes; this does it once.
+        let allowed = match self.budget {
+            Some((remaining, total)) => {
+                if remaining == 0 {
+                    self.limit_hit = Some(total);
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        Error::LimitExceeded {
+                            detail: format!("reached the {total}-byte limit at `{}`", self.entry),
+                        }
+                        .to_string(),
+                    ));
+                }
+                if buf.len() as u64 > remaining {
+                    // Charge what the limit allows, then fail: the caller must know the entry did
+                    // not fit rather than see a short write it might mistake for success.
+                    let take = remaining as usize;
+                    self.inner.write_all(&buf[..take])?;
+                    self.written = self.written.saturating_add(take as u64);
+                    self.limit_hit = Some(total);
+                    self.budget = Some((0, total));
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        Error::LimitExceeded {
+                            detail: format!("reached the {total}-byte limit at `{}`", self.entry),
+                        }
+                        .to_string(),
+                    ));
+                }
+                buf.len()
+            }
+            None => buf.len(),
+        };
+        self.inner.write_all(&buf[..allowed])?;
+        self.written = self.written.saturating_add(allowed as u64);
+        if let Some(budget) = &mut self.budget {
+            budget.0 = budget.0.saturating_sub(allowed as u64);
+        }
+        Ok(())
+    }
+
     fn flush(&mut self) -> io::Result<()> {
         self.inner.flush()
     }

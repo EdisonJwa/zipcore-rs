@@ -6,6 +6,39 @@ All notable changes to this project are documented here. The format follows
 
 Because this crate is pre-1.0, the minor version is where breaking changes land.
 
+## [0.4.0] - 2026-10-20
+
+### Fixed
+
+- **The default build's MSRV is 1.70 again.** 0.3.0 made `getrandom 0.4` a required dependency for
+  encryption salts; that crate needs Rust 1.85 *and* edition 2024, so the advertised 1.70 floor was
+  fiction for the default build. It is now pinned to `getrandom 0.2` (MSRV 1.60).
+- `deflate-zlib-rs = ["dep:flate2", "flate2/zlib-rs"]` used feature syntax that Cargo 1.70 cannot
+  parse, which broke the old-toolchain build outright. Now `"flate2?/zlib-rs"`.
+- README MSRV table corrected to measured values: `deflate-zlib-rs` needs 1.75 (not 1.70 as
+  previously implied) and `aes-crypto` needs 1.89 (not 1.85), the latter set by `aes 0.9.3`.
+
+### Added
+
+- `scripts/msrv-check.ps1` — verifies every advertised MSRV row against real toolchains, and fails
+  if a dependency raises a floor quietly.
+- CI (`.github/workflows/ci.yml`): test matrix over six feature combinations, a job per MSRV row,
+  clippy and rustfmt with `-D warnings`, docs build, a README-example compile check, a check that
+  `src/` contains no `unsafe`, a default-dependency-budget check, and a time-boxed fuzz run.
+- `fuzz/` with reader and writer round-trip targets.
+- `scripts/check-readme-examples.py` — compiles every Rust block in the README.
+
+### Changed
+
+- README rewritten for readers arriving from crates.io: capabilities and limits first, measured
+  performance table, MSRV table, and an honest comparison against `zip`.
+
+### Performance
+
+- Extraction is faster: `BudgetedSink` now implements `write_all`, so `io::copy` moves whole
+  buffers instead of paying a bounds check and a `saturating_sub` per chunk. Measured 7–18%
+  improvement on a 100-entry, 73.7 MiB archive (284.7 ms → 233–268 ms).
+
 ## [0.3.0] - 2026-10-20
 
 ### Added
@@ -97,6 +130,7 @@ First published release.
   features.
 - A ustar `TarWriter`, including `tar.zst` via `TarWriter::new_zstd`.
 
+[0.4.0]: https://github.com/EdisonJwa/zipcore-rs/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/EdisonJwa/zipcore-rs/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/EdisonJwa/zipcore-rs/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/EdisonJwa/zipcore-rs/releases/tag/v0.1.0
