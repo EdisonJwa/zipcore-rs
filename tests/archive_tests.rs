@@ -296,26 +296,26 @@ fn refuses_encrypted_entries() {
 #[test]
 fn refuses_unimplemented_compression_methods() {
     let mut b = ZipBuilder::new();
-    // 98 is PPMd: named, and with no codec in any build configuration — so this test means the
-    // same thing whether or not another codec's feature happens to be on.
-    b.add_unknown_method("archive.ppmd", b"payload", 98);
+    // 95 is XZ, which this crate does not decode in any configuration, so the test means the same
+    // thing regardless of which codec features happen to be enabled.
+    b.add_unknown_method("archive.xz", b"payload", 95);
     let mut archive = open(b.finish());
 
-    assert_eq!(archive.entries()[0].compression(), Compression::Ppmd);
-    assert_eq!(archive.entries()[0].compression().name(), "ppmd");
+    assert_eq!(archive.entries()[0].compression(), Compression::Xz);
+    assert_eq!(archive.entries()[0].compression().name(), "xz");
     assert!(!archive.entries()[0].compression().is_supported());
 
     match archive.by_index(0) {
         Err(Error::UnsupportedCompression { method, entry }) => {
-            assert_eq!(method, 98);
-            assert_eq!(entry, "archive.ppmd");
+            assert_eq!(method, 95);
+            assert_eq!(entry, "archive.xz");
         }
         other => panic!("expected UnsupportedCompression, got {other:?}"),
     }
 
     // The message names the method, so a caller does not have to look up method ids.
     let message = archive.by_index(0).unwrap_err().to_string();
-    assert!(message.contains("ppmd"), "message was: {message}");
+    assert!(message.contains("xz"), "message was: {message}");
 }
 
 #[test]
@@ -340,17 +340,27 @@ fn method_ids_round_trip_through_the_enum() {
     assert!(Compression::Stored.is_supported() && Compression::Stored.is_writable());
     assert!(Compression::Deflate.is_supported() && Compression::Deflate.is_writable());
 
-    // The methods with no codec at all are named but never claimable, in any configuration.
-    for compression in [
-        Compression::Deflate64,
-        Compression::Lzma,
-        Compression::Xz,
-        Compression::Ppmd,
-    ] {
-        assert!(!compression.is_supported(), "{}", compression.name());
-        assert!(!compression.is_writable(), "{}", compression.name());
+    // XZ (method 95) is never supported: it is not a method that appears in real ZIP files.
+    assert!(!Compression::Xz.is_supported());
+    assert!(!Compression::Xz.is_writable());
+    assert_ne!(Compression::Xz.name(), "unknown");
+
+    // The decode-only methods follow their feature, and are never writable: encoding these is
+    // deliberately not implemented.
+    for compression in [Compression::Deflate64, Compression::Lzma, Compression::Ppmd] {
         assert_ne!(compression.name(), "unknown");
+        assert!(
+            !compression.is_writable(),
+            "{} must stay decode-only",
+            compression.name()
+        );
     }
+    assert_eq!(
+        Compression::Deflate64.is_supported(),
+        cfg!(feature = "deflate64")
+    );
+    assert_eq!(Compression::Lzma.is_supported(), cfg!(feature = "lzma"));
+    assert_eq!(Compression::Ppmd.is_supported(), cfg!(feature = "ppmd"));
 
     // The two with codecs depend on their features.
     assert_eq!(Compression::Zstd.is_supported(), cfg!(feature = "zstd"));

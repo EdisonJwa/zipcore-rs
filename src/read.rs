@@ -21,20 +21,38 @@ const HISTORY_SIZE: usize = 32 * 1024;
 /// Handed to a codec from another crate, which owns it while it decompresses. This is what makes
 /// such a codec usable at all: a zstd or bzip2 decoder wants to own its input, and giving it a
 /// bounded borrow of the archive means no payload ever has to be buffered whole.
-#[cfg(any(feature = "zstd", feature = "bzip2"))]
+#[cfg(any(
+    feature = "zstd",
+    feature = "bzip2",
+    feature = "deflate64",
+    feature = "lzma",
+    feature = "ppmd"
+))]
 struct Bounded<'a, R: Read + Seek> {
     reader: &'a mut R,
     remaining: u64,
 }
 
-#[cfg(any(feature = "zstd", feature = "bzip2"))]
+#[cfg(any(
+    feature = "zstd",
+    feature = "bzip2",
+    feature = "deflate64",
+    feature = "lzma",
+    feature = "ppmd"
+))]
 impl<'a, R: Read + Seek> Bounded<'a, R> {
     fn new(reader: &'a mut R, remaining: u64) -> Self {
         Self { reader, remaining }
     }
 }
 
-#[cfg(any(feature = "zstd", feature = "bzip2"))]
+#[cfg(any(
+    feature = "zstd",
+    feature = "bzip2",
+    feature = "deflate64",
+    feature = "lzma",
+    feature = "ppmd"
+))]
 impl<R: Read + Seek> Read for Bounded<'_, R> {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         if buf.is_empty() || self.remaining == 0 {
@@ -391,6 +409,7 @@ fn decrypt_entry<R: Read + Seek>(
                 .map_err(Error::Io)?;
             out
         }
+        #[allow(unreachable_patterns)]
         other => {
             return Err(Error::UnsupportedCompression {
                 entry: entry.name.clone(),
@@ -453,6 +472,85 @@ fn build_codec<'a, R: Read + Seek>(
             // Each ZIP member is exactly one zstd frame, so stopping at the frame boundary keeps
             // the decoder from reading bytes that belong to the next entry.
             Ok(Box::new(decoder.single_frame()))
+        }
+        #[cfg(feature = "deflate64")]
+        Compression::Deflate64 => {
+            reader
+                .seek(SeekFrom::Start(data_start))
+                .map_err(Error::Io)?;
+            let bounded = Bounded::new(reader, entry.compressed_size);
+            // Deflate64 is a Deflate variant with a 64 KiB window; a plain Read adapter.
+            Ok(Box::new(deflate64::Deflate64Decoder::new(bounded)))
+        }
+        #[cfg(feature = "lzma")]
+        Compression::Lzma => {
+            reader
+                .seek(SeekFrom::Start(data_start))
+                .map_err(Error::Io)?;
+            let bounded = Bounded::new(reader, entry.compressed_size);
+            let mut input = std::io::BufReader::new(bounded);
+            // ZIP's method 14 is not a `.lzma` file: APPNOTE 5.3.3 puts a 2-byte version, a
+            // 2-byte properties length, then the 5-byte LZMA properties (lc/lp/pb packed, and a
+            // dictionary size), and only then the raw range-coded stream.
+            let mut header = [0u8; 4];
+            input.read_exact(&mut header).map_err(Error::Io)?;
+            let props_len = u16::from_le_bytes([header[2], header[3]]) as usize;
+            if props_len != 5 {
+                return Err(Error::malformed(format!(
+                    "LZMA entry has a {props_len}-byte properties field, expected 5"
+                )));
+            }
+            let mut props = [0u8; 5];
+            input.read_exact(&mut props).map_err(Error::Io)?;
+            let packed = props[0];
+            let (lc, lp, pb) = (packed % 9, (packed / 9) % 5, packed / 45);
+            let dict_size = u32::from_le_bytes([props[1], props[2], props[3], props[4]]);
+            let properties = lzma_rs::decompress::raw::LzmaProperties {
+                lc: lc.into(),
+                lp: lp.into(),
+                pb: pb.into(),
+            };
+            // The declared size lets the decoder stop exactly at the end, which matters inside a
+            // container where the stream has no end marker of its own.
+            let params = lzma_rs::decompress::raw::LzmaParams::new(
+                properties,
+                dict_size,
+                Some(entry.uncompressed_size),
+            );
+            let decoder = lzma_rs::decompress::raw::LzmaDecoder::new(params, None)
+                .map_err(|error| Error::malformed(format!("LZMA decoder: {error:?}")))?;
+            // Collect into a buffer: lzma-rs drives its own output loop rather than exposing a
+            // Read, and the entry size is already bounded by the caller's limit.
+            let mut out = Vec::new();
+            let mut decoder = decoder;
+            decoder.decompress(&mut input, &mut out).map_err(|error| {
+                Error::malformed(format!("LZMA entry did not decode: {error:?}"))
+            })?;
+            Ok(Box::new(std::io::Cursor::new(out)))
+        }
+        #[cfg(feature = "ppmd")]
+        Compression::Ppmd => {
+            reader
+                .seek(SeekFrom::Start(data_start))
+                .map_err(Error::Io)?;
+            let bounded = Bounded::new(reader, entry.compressed_size);
+            let mut input = std::io::BufReader::new(bounded);
+            // One 16-bit little-endian field: order-1 (4 bits), memory in MiB - 1 (8 bits),
+            // restoration method (4 bits). There is no size field.
+            let mut buf = [0u8; 2];
+            input.read_exact(&mut buf).map_err(Error::Io)?;
+            let parameters = u16::from_le_bytes(buf);
+            let order = u32::from(parameters & 0x0F) + 1;
+            let memory_size = 1024 * 1024 * (u32::from((parameters >> 4) & 0xFF) + 1);
+            let restoration = (parameters >> 12) & 0x0F;
+            let decoder = ppmd_rust::Ppmd8Decoder::new(
+                input,
+                order,
+                memory_size,
+                ppmd_rust::RestoreMethod::from(restoration),
+            )
+            .map_err(|error| Error::malformed(format!("PPMd decoder: {error:?}")))?;
+            Ok(Box::new(decoder))
         }
         #[cfg(feature = "bzip2")]
         Compression::Bzip2 => {

@@ -1,6 +1,6 @@
 [package]
 name = "zipcore"
-version = "0.5.0"
+version = "0.6.0"
 edition = "2021"
 rust-version = "1.70"
 license = "MIT OR Apache-2.0"
@@ -40,6 +40,11 @@ sha1 = { version = "0.11", optional = true }
 pbkdf2 = { version = "0.13", optional = true }
 zeroize = { version = "1.8", optional = true }
 getrandom = { version = "0.2", default-features = false, features = ["std"] }
+# Optional decoders. Each is a separate feature so the default build stays at three direct
+# dependencies; none of these is needed for the formats zips in the wild overwhelmingly use.
+lzma-rs = { version = "0.3", default-features = false, features = ["raw_decoder", "stream"], optional = true }
+deflate64 = { version = "0.1", optional = true }
+ppmd-rust = { version = "1.5", optional = true }
 
 [dev-dependencies]
 # Already in the dependency graph; re-declared so integration tests can build fixtures
@@ -58,7 +63,12 @@ bzip2 = ["dep:bzip2"]
 # stays on miniz_oxide, which is already the faster of the two for inflate.
 deflate-zlib-rs = ["dep:flate2", "flate2?/zlib-rs"]
 # WinZip AES read and write. Raises the MSRV to 1.85 for this feature only.
-aes-crypto = ["dep:aes", "dep:ctr", "dep:hmac", "dep:sha1", "dep:pbkdf2", "dep:zeroize", ]
+aes-crypto = ["dep:aes", "dep:ctr", "dep:hmac", "dep:sha1", "dep:pbkdf2", "dep:zeroize"]
+# Decode-only methods. Encoding them is not worth carrying: they are rare in the wild, and the
+# archives that use them were written by other tools.
+lzma = ["dep:lzma-rs"]
+deflate64 = ["dep:deflate64"]
+ppmd = ["dep:ppmd-rust"]
 
 # Packing tar.zst needs the codec, and nothing else in the default build does.
 [[example]]

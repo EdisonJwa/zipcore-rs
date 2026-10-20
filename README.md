@@ -42,7 +42,7 @@ the trade this crate makes: fewer moving parts, no `unsafe`, an older compiler �
 narrower feature set.
 
 What you give up is listed honestly under [What is not supported](#what-is-not-supported). If you
-need LZMA, Deflate64 or PPMd, use `zip`.
+need a compression method this crate cannot read, `zip` supports more of them.
 
 ---
 
@@ -59,14 +59,14 @@ need LZMA, Deflate64 or PPMd, use `zip`.
 - **Appending** — add entries to an existing archive.
 - **Byte-faithful copying** between archives without decompressing.
 - **A `ustar` tar writer**, including `tar.zst`.
-- **Optional codecs** — zstd (method 93), bzip2 (method 12), and a faster Deflate backend.
+- **Optional codecs** — zstd (93), bzip2 (12), Deflate64 (9), LZMA (14) and PPMd (98) for
+  reading, plus a faster Deflate backend for writing.
 
 ## What is not supported
 
 Reported as named errors, never guessed at or silently mis-decoded:
 
-- LZMA/XZ, Deflate64, PPMd.
-- Legacy shrink/implode/reduce decoders.
+- XZ (method 95), legacy shrink/implode/reduce decoders.
 - Truly *spanned* archives (floppy-era, entry crosses volumes). Split volumes are supported.
 - Writing to a non-seekable sink: local headers are patched by seeking back, which needs a
   seekable target but produces the more widely compatible archive.
@@ -85,7 +85,7 @@ Measured against `zip` 9.0.5 on the same machine, release build, `lto = true`,
 | Open + list 1000 entries | 124 µs | 167 µs | **26% faster** |
 | `read_entry`, whole entry | 1.41 ms | 1.60 ms | **12% faster** |
 | Write, Deflate L6 | 625 ms | 289 ms | the codec, not the container — see below |
-| `by_name`, 10 000-entry archive | 98 ns per lookup | linear scan | name index, built lazily |
+| `by_name`, 10 000-entry archive | 98 ns per lookup | linear scan | lazily built name index |
 | Extract 500 small entries | 200 ms | 110 ms | see [Extraction speed](#extraction-speed-vs-crash-tidiness) |
 
 **The Deflate gap is the compressor, not the container.** Forced onto `flate2`'s pure-Rust
@@ -344,6 +344,13 @@ capability.
 | `bzip2` | `bzip2` → `libbz2-rs-sys`, **pure Rust** | reading method 12 |
 | `deflate-zlib-rs` | `flate2` + `zlib-rs`, both **pure Rust** | ~2× faster Deflate compression |
 | `aes-crypto` | `aes`, `ctr`, `hmac`, `sha1`, `pbkdf2`, `zeroize` | WinZip AES-128/192/256, read and write |
+| `deflate64` | `deflate64` (**pure Rust**) | reading method 9 |
+| `lzma` | `lzma-rs` (**pure Rust**) | reading method 14 |
+| `ppmd` | `ppmd-rust` (**pure Rust**) | reading method 98 |
+
+The three decode-only methods are read-only on purpose: they are rare in the wild, the archives
+that use them were written by other tools, and carrying an encoder for each would be code without
+users.
 
 Traditional PKWARE ("ZipCrypto") encryption needs no feature at all.
 
@@ -365,6 +372,9 @@ dependencies need. Measured, not assumed:
 | `+ deflate-zlib-rs` | 1.75 |
 | `+ bzip2` | 1.85 |
 | `+ zstd` | 1.85 |
+| `+ ppmd` | 1.82 |
+| `+ lzma` | 1.83 |
+| `+ deflate64` | **1.87** |
 | `+ aes-crypto` | **1.89** |
 
 The AES floor is set by `aes 0.9.3`, which raised its own MSRV. `scripts/msrv-check.ps1` re-checks
@@ -420,8 +430,7 @@ implementation — the AE-2 zero-CRC rule was found exactly that way.
 | Item | Cost | Notes |
 | --- | --- | --- |
 | Non-seekable sink | moderate | needs data descriptors and a rewrite of the header-patching path |
-| lzma / xz decode | 1 direct, 9 transitive | every published version needs rustc 1.85; the method-14 header declares a dictionary size, which needs a ceiling first |
-| deflate64 / ppmd decode | 1 each | pure Rust |
+| xz decode | 1 | method 95 is not a ZIP method in practice; no archive needs it |
 
 LZMA is the one to watch: its dictionary size is declared *in the stream*, so a decoder that trusts
 it can be made to allocate a great deal. That needs an explicit ceiling before it lands.

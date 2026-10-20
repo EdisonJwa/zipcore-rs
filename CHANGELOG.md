@@ -6,6 +6,28 @@ All notable changes to this project are documented here. The format follows
 
 Because this crate is pre-1.0, the minor version is where breaking changes land.
 
+## [0.6.0] - 2026-10-20
+
+### Added
+
+- **Decoding for Deflate64 (method 9), LZMA (method 14) and PPMd (method 98)**, each behind its
+  own off-by-default feature. All are pure Rust and decode-only: they are rare in the wild, the
+  archives using them were written by other tools, and an encoder for each would be code without
+  users. The default build keeps its three direct dependencies.
+- Verified against archives produced by 7-Zip 25.01 for all three methods, checked in as
+  fixtures. The fixtures matter because a wrong decoder tends to produce *plausible* garbage
+  rather than an error; the CRC-32 check is what makes the tests meaningful.
+- `scripts/msrv-check.ps1` gained rows for the three new features.
+
+### Notes
+
+- ZIP's method 14 is not a `.lzma` file: APPNOTE 5.3.3 puts a 2-byte version, a 2-byte properties
+  length and five bytes of LZMA properties before the raw stream. Reading it as a `.lzma`
+  container fails with a confusing "distance beyond output size" error, which is what the
+  implementation first did.
+- PPMd carries a single 16-bit header describing order, memory and restore method — and no size
+  field, so the declared uncompressed size is what bounds it.
+
 ## [0.5.0] - 2026-10-20
 
 ### Added
@@ -151,6 +173,7 @@ First published release.
   features.
 - A ustar `TarWriter`, including `tar.zst` via `TarWriter::new_zstd`.
 
+[0.6.0]: https://github.com/EdisonJwa/zipcore-rs/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/EdisonJwa/zipcore-rs/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/EdisonJwa/zipcore-rs/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/EdisonJwa/zipcore-rs/compare/v0.2.0...v0.3.0

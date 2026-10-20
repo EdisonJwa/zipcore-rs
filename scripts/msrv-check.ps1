@@ -24,6 +24,9 @@ $cases = @(
   @{ Toolchain = '1.85.1'; Features = 'bzip2';                               Label = 'bzip2' }
   @{ Toolchain = '1.85.1'; Features = 'zstd';                                Label = 'zstd' }
   @{ Toolchain = '1.89.0'; Features = 'aes-crypto';                          Label = 'aes-crypto' }
+  @{ Toolchain = '1.82.0'; Features = 'ppmd';                                Label = 'ppmd' }
+  @{ Toolchain = '1.83.0'; Features = 'lzma';                                Label = 'lzma' }
+  @{ Toolchain = '1.87.0'; Features = 'deflate64';                           Label = 'deflate64' }
 )
 
 $failed = @()

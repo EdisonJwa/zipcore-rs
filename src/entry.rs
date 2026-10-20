@@ -86,11 +86,12 @@ impl Compression {
             Compression::Stored | Compression::Deflate => true,
             Compression::Zstd => cfg!(feature = "zstd"),
             Compression::Bzip2 => cfg!(feature = "bzip2"),
-            Compression::Deflate64
-            | Compression::Lzma
-            | Compression::Xz
-            | Compression::Ppmd
-            | Compression::Other(_) => false,
+            Compression::Deflate64 => cfg!(feature = "deflate64"),
+            Compression::Lzma => cfg!(feature = "lzma"),
+            Compression::Ppmd => cfg!(feature = "ppmd"),
+            // XZ (method 95) is not a ZIP method in practice, and `Other` is by definition
+            // something this build has no decoder for.
+            Compression::Xz | Compression::Other(_) => false,
         }
     }
 
