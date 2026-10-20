@@ -8,6 +8,11 @@ description = "Streaming ZIP archive reader and writer with ZIP64 support, CRC-3
 keywords = ["zip", "archive", "decompression", "parser"]
 categories = ["compression", "parser-implementations"]
 readme = "README.md"
+repository = "https://github.com/EdisonJwa/zipcore-rs"
+homepage = "https://github.com/EdisonJwa/zipcore-rs"
+documentation = "https://docs.rs/zipcore"
+# The review document is a development artefact, not part of the crate's public API surface.
+exclude = ["CODE_REVIEW.md"]
 
 [dependencies]
 # Two dependencies, both chosen for stability rather than minimalism:
