@@ -16,26 +16,32 @@ env:
 jobs:
   # The main matrix: every feature combination that promises to work on stable.
   test:
-    name: test
+    name: test (${{ matrix.slug }})
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        features:
-          - ""
-          - "zstd"
-          - "bzip2"
-          - "deflate-zlib-rs"
-          - "aes-crypto"
-          - "zstd,bzip2,deflate-zlib-rs,aes-crypto"
+        include:
+          - features: ""
+            slug: default
+          - features: "zstd"
+            slug: zstd
+          - features: "bzip2"
+            slug: bzip2
+          - features: "deflate-zlib-rs"
+            slug: deflate-zlib-rs
+          - features: "aes-crypto"
+            slug: aes-crypto
+          - features: "zstd,bzip2,deflate-zlib-rs,aes-crypto"
+            slug: combined
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
-          # Commas are invalid in a cache key, and the matrix has entries such as
-          # "zstd,bzip2,deflate-zlib-rs,aes-crypto".
-          key: features-${{ replace(matrix.features, ',', '-') }}
+          # Commas are invalid in a cache key, and the matrix has entries listing several
+          # features, so the cache key uses a slug prepared in the matrix instead.
+          key: features-${{ matrix.slug }}
       - name: Build and test
         run: |
           if [ -z "${{ matrix.features }}" ]; then
