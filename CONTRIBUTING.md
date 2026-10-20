@@ -14,8 +14,8 @@ runs.
 
 ## Getting set up
 
-Requires a Rust toolchain. The default build has an MSRV of **1.70**; see
-[MSRV policy](#msrv-policy) before using new language features.
+Requires a Rust toolchain. The default build needs **Rust 1.85**; see
+[Compiler support](#compiler-support) before using new language features.
 
 ```sh
 git clone https://github.com/EdisonJwa/zipcore-rs
@@ -104,33 +104,34 @@ adding a row to the CI matrix in `.github/workflows/ci.yml` and to `scripts/chec
 
 | Feature | Enables | MSRV |
 | --- | --- | --- |
-| *(default)* | Stored (0), Deflate (8) | 1.70 |
+| *(default)* | Stored (0), Deflate (8) | 1.85 |
 | `zstd` | method 93, reading and writing, plus `tar.zst` | 1.85 |
 | `bzip2` | method 12, reading | 1.85 |
-| `deflate-zlib-rs` | a faster Deflate backend (~2× compression) | 1.75 |
-| `aes-crypto` | WinZip AES-128/192/256, read and write | 1.89 |
-| `lzma` | methods 14 and 95 (LZMA and XZ), reading | 1.83 |
+| `deflate-zlib-rs` | a faster Deflate backend (~2× compression) | 1.85 |
+| `aes-crypto` | WinZip AES: reads 128/192/256, writes 128/256 | 1.89 |
+| `lzma` | methods 14 and 95 (LZMA and XZ), reading | 1.85 |
 | `deflate64` | method 9, reading | 1.87 |
-| `ppmd` | method 98, reading | 1.82 |
+| `ppmd` | method 98, reading | 1.85 |
 
 The decode-only methods are read-only on purpose: they are rare in the wild, the archives using
 them were written by other tools, and carrying an encoder for each would be code without users.
 Traditional PKWARE ("ZipCrypto") encryption needs no feature at all.
 
-## MSRV policy
+## Compiler support
 
-- **The default build supports Rust 1.70**, and that floor is a published promise, not an
-  aspiration.
-- Enabling a feature raises the floor to whatever that feature's dependencies need. The per-feature
-  floors are in the table above and in the README's MSRV section.
-- A change that raises the default MSRV is a breaking change for a patch release and needs
-  discussion first.
-- `scripts/msrv-check.ps1` re-checks every claimed floor in the table above against a real
-  toolchain. CI's `msrv` job covers the default build plus `deflate-zlib-rs`, `zstd`, `bzip2` and
-  `aes-crypto`; the script is the only place that also checks `ppmd`, `lzma` and `deflate64`, so
-  run it locally when touching those. If you bump a dependency:
-  `rustup toolchain install 1.70.0 1.85.1 1.89.0` and then `pwsh -File scripts/msrv-check.ps1`.
-  A dependency raising its own MSRV is exactly how this promise broke silently once before.
+The compiler floor is **not** a design constraint. It is whatever the current dependencies require,
+measured rather than chosen, and it moves when they move. Upgrading to a newer `getrandom`, `aes` or
+`zstd` is the preferred outcome even if it raises the floor — Rust releases fix things, and pinning an
+old dependency to protect a compiler version nobody is on costs real maintenance currency.
+
+- The floor is **1.85** for the default build, 1.87 with `deflate64`, and 1.89 with `aes-crypto`.
+- `scripts/msrv-check.ps1` measures every row by building it with that exact toolchain. CI's `msrv`
+  job builds one job per row too, so a dependency bump cannot move the floor silently.
+- If you bump a dependency: run `rustup toolchain install 1.85.1 1.87.0 1.89.0` and then
+  `pwsh -File scripts/msrv-check.ps1`, and update the table above plus the README's row when a
+  number changes.
+- Do not add a dependency version pin whose only purpose is to keep the floor down. If a new release
+  needs a newer compiler, take the new release and update the documented floor.
 
 ## Adding a compression codec
 

@@ -6,6 +6,42 @@ All notable changes to this project are documented here. The format follows
 
 Because this crate is pre-1.0, the minor version is where breaking changes land.
 
+## [0.10.1] - 2026-10-20
+
+### Documentation — SECURITY.md rewritten
+
+The security policy had fallen behind the code and contained statements that were no longer true.
+
+- **Corrected the supported-version table.** It still listed 0.1.x as the supported line, nine
+  releases after that stopped being the case.
+- **Corrected the `AtomicWrite::Disabled` description.** It claimed that mode skips the
+  post-verification tidy-up. It does not: extraction deletes the partial file on any detected
+  failure in both modes. What `Disabled` gives up is crash-tidiness — a partial file can survive a
+  killed process, which cannot happen with the rename in place.
+- **Removed a claim that the ZIP64 write path is covered by a real multi-gigabyte write.** It is
+  covered by fixtures and by entries that *declare* sizes past 4 GiB. That is not the same thing,
+  and the limitation is now stated.
+- Documented the 0.9.1 path-containment fix, the 0.8.0 LZMA dictionary cap, and the 0.10.0 removal
+  of an internal review document, so the history of security-relevant changes is in one place.
+- Added a **"What is deliberately not claimed"** section: the mutation suite is a floor rather than
+  a proof, the fuzz targets are a 60-second smoke test, no independent audit has been performed, and
+  the interop oracles share blind spots.
+- Corrected password zeroisation: derived key material *is* zeroised, the caller-supplied password
+  is not reachable by the crate, and the old text conflated the two.
+- Moved the AES-192 note next to the encryption threat model: it is read but not written, because
+  the writer exposes only AES-128 and AES-256.
+
+### Documentation — CONTRIBUTING.md compiler policy
+
+The section still called 1.70 a "published promise" and described raising it as a breaking change.
+That directly contradicted the decision recorded in 0.10.0, where the floor stopped being a design
+constraint. It now says the floor is measured from the dependencies, that raising it is acceptable
+when a dependency needs it, and that a version pin whose only purpose is keeping the floor down is
+not wanted. Feature-table floors re-measured: 1.85 default, 1.87 `deflate64`, 1.89 `aes-crypto`.
+
+Fixed a stale claim in the same table: `aes-crypto` was described as reading and writing
+AES-128/192/256, but the writer exposes only 128 and 256.
+
 ## [0.10.0] - 2026-10-20
 
 Documentation overhaul, community files, and two consistency fixes found by an external review
@@ -358,6 +394,7 @@ First published release.
   features.
 - A ustar `TarWriter`, including `tar.zst` via `TarWriter::new_zstd`.
 
+[0.10.1]: https://github.com/EdisonJwa/zipcore-rs/compare/v0.10.0...v0.10.1
 [0.10.0]: https://github.com/EdisonJwa/zipcore-rs/compare/v0.9.1...v0.10.0
 [0.9.1]: https://github.com/EdisonJwa/zipcore-rs/compare/v0.9.0...v0.9.1
 [0.9.0]: https://github.com/EdisonJwa/zipcore-rs/compare/v0.8.0...v0.9.0

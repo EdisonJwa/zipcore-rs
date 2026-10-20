@@ -1,6 +1,6 @@
 [package]
 name = "zipcore"
-version = "0.10.0"
+version = "0.10.1"
 edition = "2021"
 rust-version = "1.85"
 license = "MIT OR Apache-2.0"
@@ -64,7 +64,7 @@ bzip2 = ["dep:bzip2"]
 # Swap the DEFLATE backend to zlib-rs (pure Rust, very fast). Compression only: decompression
 # stays on miniz_oxide, which is already the faster of the two for inflate.
 deflate-zlib-rs = ["dep:flate2", "flate2?/zlib-rs"]
-# WinZip AES read and write. Raises the MSRV to 1.85 for this feature only.
+# WinZip AES read and write. Raises the MSRV to 1.89 for this feature only.
 aes-crypto = ["dep:aes", "dep:ctr", "dep:hmac", "dep:sha1", "dep:pbkdf2", "dep:zeroize"]
 # Decode-only methods. Encoding them is not worth carrying: they are rare in the wild, and the
 # archives that use them were written by other tools.
