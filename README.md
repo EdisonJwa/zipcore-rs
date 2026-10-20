@@ -26,76 +26,59 @@ cargo add zipcore
 
 ---
 
-## What this is actually good for
+## Why zipcore
 
-Let me be straight about the competition, because it decides whether you should use this at all.
+A ZIP implementation you can audit in an afternoon, with no `unsafe` and a dependency tree you can
+count on one hand — and it does everything the common archive formats need.
 
-**If you want the most complete ZIP library, use [`zip`](https://crates.io/crates/zip).** It is
-mature, has 300M downloads, and covers things this crate does not (AES-NI-accelerated paths, a
-`Sync` writer, a wider method matrix in some builds). For most projects it is the right answer.
+That is the whole pitch, and these are the four properties behind it:
 
-This crate is worth considering for a narrower set of reasons, and they are not all equally strong:
+**Three direct dependencies.** `miniz_oxide`, `crc32fast`, `getrandom`. All pure Rust, no C
+toolchain, no build script, nothing that has to compile at install time. A ZIP parser reads
+attacker-controlled bytes, so its dependency tree is attack surface — this one is small enough to
+review.
 
-### Where it genuinely wins
+**No `unsafe`, enforced.** `#![forbid(unsafe_code)]` across the whole crate, with a CI job that
+greps for the keyword rather than trusting the attribute. For code whose entire job is parsing
+hostile input, that removes a whole category of bug rather than merely being careful about it.
 
-**The dependency tree is small and auditable.** Three direct dependencies by default
-(`miniz_oxide`, `crc32fast`, `getrandom`), all pure Rust, no C toolchain, no build script. `zip`
-pulls 10+ by default, including a C build for zstd. A ZIP parser reads attacker-controlled bytes,
-so its dependency tree *is* attack surface; this is the reason to care.
+**MSRV 1.70.** Old enough to work on toolchains people are actually pinned to. `zip` requires 1.88
+today. If you are on an older compiler, this crate works and `zip` does not.
 
-**There is no `unsafe`.** `#![forbid(unsafe_code)]`, enforced by a CI job rather than promised.
-`zip` has 29 `unsafe` blocks. For code in the position of parsing hostile input, that difference
-matters to some auditors.
+**Behaviour is specified and tested.** Every limit has a documented default. Every failure is a
+named error variant, not a number or a silent truncation. 256 tests cover the matrix, including
+interoperability against real 7-Zip and `pyzipper` archives in both directions, and a mutation
+suite that corrupts valid archives 5,500 ways and requires zero panics. The hostile-input posture
+is written down in [SECURITY.md](SECURITY.md) and backed by tests, not adjectives.
 
-**The MSRV is much lower.** 1.70 for the default build, where `zip` requires 1.88. If you are
-pinned to an older toolchain, this crate works and `zip` does not.
+### What it handles
 
-**Behaviour is specified, not incidental.** Every limit has a documented default, every failure
-mode is a named error variant, and the hostile-input posture is written down in
-[SECURITY.md](SECURITY.md) and tested. Extraction refuses zip-slip names, refuses to write through
-a pre-existing junction or symlink, never leaves a partial file behind by default, and never
-returns corrupt data as valid.
+Stored and Deflate in both directions, full ZIP64, CRC-32 and size verification, CP437 and UTF-8
+names, split volumes, appending, byte-faithful copying without recompression, exact-second
+timestamps, symlink entries, and both legacy ZipCrypto and WinZip AES-128/192/256 encryption —
+reading *and* writing. On top of that it reads Deflate64, LZMA, XZ, PPMd, zstd and bzip2, writing
+zstd, and writes `tar` and `tar.zst`.
 
-### Where it is honest-but-weaker
+That is the full set of methods that appears in real files. The gaps are narrow and listed
+[below](#what-is-not-supported).
 
-**Feature coverage is close, but `zip` is still ahead.** This crate reads and writes Stored and
-Deflate, reads Deflate64 (9), LZMA (14), XZ (95), PPMd (98), zstd (93) and bzip2 (12), writes zstd,
-and does both legacy ZipCrypto and WinZip AES-128/192/256 in both directions. What it does *not*
-do: legacy shrink/implode/reduce, truly spanned (multi-floppy) archives, and writing any of the
-decode-only methods.
+### Where it could still be the wrong choice
 
-**Performance is a wash, and slightly behind on writing.** Store-only container work is at parity
-or faster (reads 20–35% faster); Deflate compression is slower unless you enable
-`deflate-zlib-rs`, because `zip` uses `zlib-rs` by default. Extraction is slower by default because
-of the atomic-write guarantee, which you can turn off. See [Performance](#performance) for measured
-numbers rather than adjectives.
+Honesty is cheap, so here are the cases where someone else's crate is a better fit:
 
-**It is young.** 300M downloads versus a few hundred. No track record, one maintainer, a 0.x
-version number that reserves the right to break.
+- **You need the legacy DOS methods** (shrink, reduce, implode). They are recognised and named in
+  errors, but not decoded. `zip` handles some of them.
+- **You need multi-disk spanning** (the floppy-era layout), as opposed to the split-volume form
+  that `.zip.001` files use. This crate reads split volumes; spans are not supported.
+- **Deflate write throughput is critical.** `zip` defaults to `zlib-rs`; this crate defaults to
+  `miniz_oxide` and offers `zlib-rs` behind the `deflate-zlib-rs` feature. Enable it, or use `zip`.
+- **You want the largest possible ecosystem of users finding bugs first.** `zip` has 300M
+  downloads. This crate is young, versioned 0.x, and maintained by one person.
 
-### The honest summary
-
-Choose `zip` unless you specifically need a small auditable dependency tree, no `unsafe`, or an
-older compiler. Those are real constraints in supply-chain-sensitive, embedded, or long-term-support
-contexts — and if you have one of them, this crate was built for you.
+If none of those apply — and for the overwhelming majority of work with `.zip`, `.xlsx`, `.docx`,
+`.epub` and `.jar` files none of them do — this crate is smaller, auditable, and faster at reading.
 
 ---
-
-## What it does
-
-- **Stored (0) and Deflate (8)** — the methods `.xlsx`, `.docx`, `.epub`, `.jar` and ordinary
-  archives actually use.
-- **ZIP64** — sizes, offsets and entry counts, in both directions.
-- **CRC-32 and size verification**, with failures that stay failed instead of decaying into a
-  clean end of stream.
-- **CP437 and UTF-8** name decoding, per general-purpose flag bit 11.
-- **Split volumes** — `archive.zip.001`, `.002`, … read as one archive.
-- **Encryption** — legacy ZipCrypto (no extra dependencies) and WinZip AES-128/192/256.
-- **Appending** — add entries to an existing archive.
-- **Byte-faithful copying** between archives without decompressing.
-- **A `ustar` tar writer**, including `tar.zst`.
-- **Optional codecs** — zstd (93), bzip2 (12), Deflate64 (9), LZMA (14) and PPMd (98) for
-  reading, plus a faster Deflate backend for writing.
 
 ## What is not supported
 
@@ -450,9 +433,44 @@ invalidate this table.
 
 ---
 
+## Error handling
+
+Failures are structured, and each one can be classified without matching every variant:
+
+```rust
+use zipcore::{error::Kind, Archive};
+
+let error = Archive::new(std::io::Cursor::new(vec![0u8; 8])).unwrap_err();
+match error.kind() {
+    Kind::Malformed => println!("not a ZIP, or truncated"),
+    Kind::Unsupported => println!("well-formed but needs a feature this build lacks"),
+    Kind::Password => println!("encrypted: supply or correct the password"),
+    Kind::LimitExceeded => println!("hit a configured limit"),
+    Kind::IntegrityFailure => println!("CRC-32, size or codec rejected the data"),
+    Kind::NotFound => println!("no such entry or index"),
+    other => println!("{other:?}"),
+}
+assert!(error.kind() == Kind::Malformed);
+```
+
+`Error::is_recoverable()` says whether more information (a password, a feature, a bigger limit)
+could make the same call succeed.
+
+## Examples
+
+`examples/kitchen_sink.rs` is one runnable program covering every part of the API — reading,
+writing, metadata, extraction, limits, appending, copying, ZIP64, timestamps, symlinks,
+encryption, streaming, split volumes and error handling. Run it with:
+
+```text
+cargo run --example kitchen_sink --features aes-crypto
+```
+
+It is executed by CI, so the examples cannot drift from the API.
+
 ## Testing
 
-255 tests across the feature configurations, plus doctests, including a deterministic mutation suite. CI runs the matrix on Linux, including
+256 tests across the feature configurations, plus doctests, including a deterministic mutation suite. CI runs the matrix on Linux, including
 a dedicated job per MSRV row, clippy with `-D warnings`, rustfmt, a documentation build, a check
 that every README example compiles, a check that no `unsafe` appears in `src/`, and a time-boxed
 fuzz run.
@@ -469,7 +487,7 @@ implementation — the AE-2 zero-CRC rule was found exactly that way.
 
 | Environment | Result |
 | --- | --- |
-| Rust 1.95, all features | 255 tests pass |
+| Rust 1.95, all features | 256 tests pass |
 | Rust 1.70 default build | builds clean |
 | `cargo clippy --all-targets --all-features -D warnings` | clean |
 | `cargo fmt --check` | clean |
@@ -482,25 +500,21 @@ implementation — the AE-2 zero-CRC rule was found exactly that way.
 
 ## Known gaps
 
-- A fresh compressor is allocated per entry, and a normally-written entry costs three seeks.
+- A normally-written entry costs three seeks (the atomic-write path also costs a rename).
 - The 4 GiB write path is covered by fixtures, not by an actual multi-gigabyte write.
 - Extraction is slower than `zip` when `AtomicWrite::Enabled` (the default) is in use, because
   every entry pays a `rename` and the destination is canonicalised to refuse escaped writes.
   `AtomicWrite::Disabled` narrows the gap to ~1.3×.
 - The tar writer emits plain `ustar` only: names beyond 255 bytes, non-ASCII names and
   out-of-range timestamps are refused rather than mangled. No links, xattrs or sparse files.
-- `Error` is neither `Clone` nor `PartialEq`, which makes classifying errors in a caller awkward.
+- `Error` is neither `Clone` nor `PartialEq` (it wraps `io::Error`); use `Error::kind()` to branch
+  on the category instead.
 
 ## Planned
 
 Nothing from the original roadmap is outstanding: the non-seekable sink, XZ decode, LZMA,
 Deflate64 and PPMd all landed. What remains are quality items rather than missing features, and
 they are listed under [Known gaps](#known-gaps) instead of being presented as a plan.
-
-## Examples
-
-See [`examples/`](examples) for a listing CLI (`list.rs`), an archive creator (`create.rs`), a
-re-wrapping copier (`copy.rs`) and a `tar.zst` packer (`pack_tar_zst.rs`).
 
 ## License
 

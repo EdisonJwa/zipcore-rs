@@ -6,6 +6,39 @@ All notable changes to this project are documented here. The format follows
 
 Because this crate is pre-1.0, the minor version is where breaking changes land.
 
+## [0.9.0] - 2026-10-20
+
+### Fixed
+
+- **CI now passes.** It had failed on every push since it was added, because it sets
+  `RUSTFLAGS=-D warnings` and local checks did not. `tests/method_codec_tests.rs` referenced
+  feature-gated fixtures from configurations where they were unused, and README examples bind
+  values for illustration, which `-D unused-variables` rejected. Both fixed.
+- Added `scripts/check-all.ps1`, which runs exactly what CI runs with the same flags. Verifying
+  under weaker settings than CI is what let six consecutive red builds look green locally.
+
+### Added
+
+- **`Error::kind()`** returning a new `error::Kind` enum, plus `Error::is_recoverable()`. `Error`
+  cannot be `Clone` or `PartialEq` because it wraps `io::Error`, so this is the practical way for a
+  caller to branch on the category of a failure.
+- **`examples/kitchen_sink.rs`** — one runnable program covering every useful part of the API, run
+  by CI so it cannot drift.
+- Clippy and rustfmt are now part of the local verification script.
+
+### Changed
+
+- **README positioning rewritten again.** The previous version opened by recommending `zip` and
+  listed our weaknesses before our strengths — wrong for a crate's own README. It now leads with
+  what zipcore is for, and keeps the honest comparison as a short "when this is the wrong choice"
+  section.
+
+### Performance
+
+- The DEFLATE compressor is recycled between entries instead of allocated per entry. A
+  `CompressorOxide` owns a 32 KiB window and Huffman tables; `reset()` restores both without
+  freeing. Output is byte-identical, which is asserted by a regression test.
+
 ## [0.8.0] - 2026-10-20
 
 Review pass: security hardening, the last roadmap items, and a rewritten positioning.
@@ -224,6 +257,7 @@ First published release.
   features.
 - A ustar `TarWriter`, including `tar.zst` via `TarWriter::new_zstd`.
 
+[0.9.0]: https://github.com/EdisonJwa/zipcore-rs/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/EdisonJwa/zipcore-rs/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/EdisonJwa/zipcore-rs/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/EdisonJwa/zipcore-rs/compare/v0.5.0...v0.6.0

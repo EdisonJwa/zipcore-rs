@@ -178,6 +178,77 @@ impl fmt::Display for Error {
     }
 }
 
+/// A coarse classification of [`Error`], for callers that need to branch on the *category* of a
+/// failure rather than match every variant.
+///
+/// This exists because `Error` cannot be `Clone` or `PartialEq` — it wraps [`std::io::Error`],
+/// which is neither. Comparing a `Kind` is the practical substitute.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum Kind {
+    /// The archive is structurally invalid or truncated: it was not, or is no longer, a ZIP.
+    Malformed,
+    /// The archive is well-formed but uses a feature this build cannot handle, such as a
+    /// compression method whose feature is off. Rebuilding with that feature may help.
+    Unsupported,
+    /// A password was required (or was wrong).
+    Password,
+    /// A configured limit was reached: entry count, total bytes, or per-entry size.
+    LimitExceeded,
+    /// An integrity check failed: CRC-32 or the declared size did not match the data.
+    IntegrityFailure,
+    /// The caller asked for something that does not exist, such as an out-of-range index.
+    NotFound,
+    /// The writer refused because a previous write already failed.
+    WriterFailed,
+    /// A name was refused because extracting it would be unsafe.
+    UnsafeName,
+    /// The destination already exists and the overwrite policy forbade replacing it.
+    AlreadyExists,
+    /// An underlying I/O failure.
+    Io,
+}
+
+impl Error {
+    /// Classify this error.
+    ///
+    /// ```
+    /// # use zipcore::{Archive, error::Kind};
+    /// let error = Archive::new(std::io::Cursor::new(vec![0u8; 8])).unwrap_err();
+    /// assert_eq!(error.kind(), Kind::Malformed);
+    /// ```
+    pub fn kind(&self) -> Kind {
+        match self {
+            Error::Io(_) => Kind::Io,
+            Error::InvalidSignature | Error::Malformed(_) => Kind::Malformed,
+            Error::UnsupportedCompression { .. }
+            | Error::CompressionNotWritable { .. }
+            | Error::Unsupported(_) => Kind::Unsupported,
+            Error::Encrypted { .. } | Error::WrongPassword => Kind::Password,
+            Error::LimitExceeded { .. }
+            | Error::SizeLimitExceeded { .. }
+            | Error::Zip64Required { .. } => Kind::LimitExceeded,
+            Error::CrcMismatch { .. } | Error::SizeMismatch { .. } => Kind::IntegrityFailure,
+            Error::IndexOutOfRange { .. } | Error::EntryNotFound { .. } => Kind::NotFound,
+            Error::WriterFailed { .. } | Error::WriterFinished | Error::NoEntryInProgress => {
+                Kind::WriterFailed
+            }
+            Error::UnsafePath { .. } => Kind::UnsafeName,
+            Error::AlreadyExists { .. } => Kind::AlreadyExists,
+            // `Compression` is the codec rejecting data, which is an integrity problem.
+            Error::Compression { .. } => Kind::IntegrityFailure,
+        }
+    }
+
+    /// Whether retrying with more capability (a feature, a password, a larger limit) could help.
+    pub fn is_recoverable(&self) -> bool {
+        matches!(
+            self.kind(),
+            Kind::Unsupported | Kind::Password | Kind::LimitExceeded | Kind::AlreadyExists
+        )
+    }
+}
+
 impl std::error::Error for Error {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {

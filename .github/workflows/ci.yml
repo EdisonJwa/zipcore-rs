@@ -116,6 +116,10 @@ jobs:
         run: cargo doc --no-deps --all-features
       - name: Check every README example compiles
         run: python3 scripts/check-readme-examples.py
+      - name: Build and run the API example
+        # A compile-only check would let a broken example ship; running it proves each section
+        # actually works.
+        run: cargo run --example kitchen_sink --features aes-crypto
 
   # `#![forbid(unsafe_code)]` is a headline claim; prove it rather than trusting the attribute.
   no-unsafe:

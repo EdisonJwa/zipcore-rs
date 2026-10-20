@@ -688,3 +688,39 @@ fn rewind_after_writing_allows_reading_the_same_cursor() {
         .unwrap();
     assert_eq!(out, "seekable");
 }
+
+/// The writer reuses one `CompressorOxide` between entries to avoid reallocating its 32 KiB
+/// window for every member. That is only acceptable if `reset()` really does produce a fresh
+/// stream: the output must be byte-identical to building each archive from scratch.
+#[test]
+fn recycled_compressor_produces_identical_output() {
+    let build = || {
+        let mut writer = ZipWriter::new(Cursor::new(Vec::new())).unwrap();
+        for i in 0..50 {
+            writer
+                .add_file(
+                    &format!("f{i}.txt"),
+                    b"repeated payload content for compression",
+                    &FileOptions::default(),
+                )
+                .unwrap();
+        }
+        writer.finish().unwrap().into_inner()
+    };
+
+    // The first call allocates; later calls reuse. All must agree.
+    let first = build();
+    for _ in 0..3 {
+        let n = build();
+        assert_eq!(n, first, "a recycled compressor changed the output bytes");
+    }
+
+    // And the reused path still round-trips.
+    let mut archive = open(first);
+    for i in 0..archive.len() {
+        assert_eq!(
+            archive.read_entry(i).unwrap(),
+            b"repeated payload content for compression"
+        );
+    }
+}

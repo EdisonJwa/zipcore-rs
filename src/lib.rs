@@ -91,7 +91,6 @@ mod cp437;
 mod crypto;
 mod dos;
 mod entry;
-mod error;
 mod multivolume;
 mod path;
 mod read;
@@ -105,6 +104,8 @@ pub use crate::archive::{
     MAX_IN_MEMORY_ENTRY,
 };
 pub use crate::entry::{Compression, Entry};
+pub mod error;
+
 pub use crate::error::{Error, Result};
 pub use crate::multivolume::MultiVolumeReader;
 pub use crate::read::ZipFile;

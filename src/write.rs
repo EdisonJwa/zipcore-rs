@@ -302,6 +302,12 @@ pub struct ZipWriter<W: Write + Seek> {
     /// Set when a structured failure occurs, so `finish` reports the cause rather than the
     /// flattened `io::Error` that the `Write` trait forces on us.
     pending_error: Option<Error>,
+    /// A compressor recycled from the previous entry.
+    ///
+    /// `CompressorOxide` owns a 32 KiB window plus Huffman tables, so allocating one per entry
+    /// costs real time on archives with many small members. `reset` makes the allocation
+    /// reusable, and this holds it between entries.
+    spare_compressor: Option<Box<CompressorOxide>>,
 }
 
 impl<W: Write + Seek> std::fmt::Debug for ZipWriter<W> {
@@ -345,6 +351,7 @@ impl<W: Write + Seek> ZipWriter<W> {
             current: None,
             finished: false,
             pending_error: None,
+            spare_compressor: None,
         })
     }
 
@@ -380,6 +387,7 @@ impl<W: Write + Seek> ZipWriter<W> {
             current: None,
             finished: false,
             pending_error: None,
+            spare_compressor: None,
         })
     }
 
@@ -821,7 +829,19 @@ impl<W: Write + Seek> ZipWriter<W> {
             Encoder::Stored
         } else {
             match compression {
-                Compression::Deflate => new_deflate_encoder(options.compression_level),
+                Compression::Deflate => {
+                    #[cfg(not(feature = "deflate-zlib-rs"))]
+                    {
+                        Encoder::Deflate(take_compressor(
+                            &mut self.spare_compressor,
+                            options.compression_level,
+                        ))
+                    }
+                    #[cfg(feature = "deflate-zlib-rs")]
+                    {
+                        new_deflate_encoder(options.compression_level)
+                    }
+                }
                 #[cfg(feature = "zstd")]
                 Compression::Zstd => {
                     let level = zstd_level(options.compression_level);
@@ -1047,35 +1067,39 @@ impl<W: Write + Seek> ZipWriter<W> {
         // placeholder is never read ??the entry is complete after this.
         match std::mem::replace(&mut state.encoder, Encoder::Stored) {
             Encoder::Stored => {}
-            Encoder::Deflate(mut compressor) => loop {
-                let (written, status) = {
-                    let result = deflate(
-                        compressor.as_mut(),
-                        &[],
-                        &mut state.out_buf,
-                        MZFlush::Finish,
-                    );
-                    (result.bytes_written, result.status)
-                };
-                if written > 0 {
-                    let chunk = state.out_buf[..written].to_vec();
-                    self.emit(&mut state, &chunk).map_err(Error::Io)?;
-                }
-                match status {
-                    Ok(MZStatus::StreamEnd) => break,
-                    Ok(_) if written > 0 => continue,
-                    Ok(_) => {
-                        return Err(Error::Compression {
-                            detail: "compressor stalled while finishing".to_string(),
-                        })
+            Encoder::Deflate(mut compressor) => {
+                loop {
+                    let (written, status) = {
+                        let result = deflate(
+                            compressor.as_mut(),
+                            &[],
+                            &mut state.out_buf,
+                            MZFlush::Finish,
+                        );
+                        (result.bytes_written, result.status)
+                    };
+                    if written > 0 {
+                        let chunk = state.out_buf[..written].to_vec();
+                        self.emit(&mut state, &chunk).map_err(Error::Io)?;
                     }
-                    Err(error) => {
-                        return Err(Error::Compression {
-                            detail: format!("{error:?}"),
-                        })
+                    match status {
+                        Ok(MZStatus::StreamEnd) => break,
+                        Ok(_) if written > 0 => continue,
+                        Ok(_) => {
+                            return Err(Error::Compression {
+                                detail: "compressor stalled while finishing".to_string(),
+                            })
+                        }
+                        Err(error) => {
+                            return Err(Error::Compression {
+                                detail: format!("{error:?}"),
+                            })
+                        }
                     }
                 }
-            },
+                // Keep the finished compressor for the next entry instead of dropping its window.
+                self.spare_compressor = Some(compressor);
+            }
             #[cfg(feature = "deflate-zlib-rs")]
             Encoder::DeflateZlib(encoder) => {
                 let tail = encoder.finish().map_err(Error::Io)?;
@@ -1777,6 +1801,23 @@ fn new_compressor(level: u8) -> Box<CompressorOxide> {
         CompressorOxide::with_format_and_level(DataFormat::Raw, CompressionLevel::DefaultLevel);
     compressor.set_compression_level_raw(level.min(10));
     Box::new(compressor)
+}
+
+/// Reset a recycled compressor for a new entry, or allocate one if none is spare.
+///
+/// A new DEFLATE stream must start from a clean window and fresh Huffman tables. `reset` restores
+/// both without freeing and reallocating the 32 KiB window, which is the cost this avoids.
+#[cfg_attr(feature = "deflate-zlib-rs", allow(dead_code))]
+fn take_compressor(spare: &mut Option<Box<CompressorOxide>>, level: u8) -> Box<CompressorOxide> {
+    match spare.take() {
+        Some(mut compressor) => {
+            compressor.reset();
+            // `reset` restores the flags captured at construction, so the level is reapplied.
+            compressor.set_compression_level_raw(level.min(10));
+            compressor
+        }
+        None => new_compressor(level),
+    }
 }
 
 /// Map the deflate-style `compression_level` (0..=10) onto zstd's range.
