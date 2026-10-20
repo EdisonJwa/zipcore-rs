@@ -28,7 +28,7 @@ fn run() -> Result<(), String> {
         .ok_or_else(|| "usage: create <output.zip>".to_string())?;
 
     let file = File::create(&path).map_err(|e| format!("{path}: {e}"))?;
-    let mut writer = ZipWriter::new(BufWriter::new(file));
+    let mut writer = ZipWriter::new(BufWriter::new(file)).unwrap();
 
     let entries: Vec<(String, Vec<u8>, FileOptions)> = vec![
         (

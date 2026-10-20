@@ -5,8 +5,8 @@
 //! ```
 //!
 //! Every payload is copied byte for byte, so the compressed sizes in the result are identical to
-//! the source's. This is the cheap way to re-wrap an archive — adding entries, dropping entries,
-//! or changing the archive comment — without paying to inflate and deflate everything again.
+//! the source's. This is the cheap way to re-wrap an archive ??adding entries, dropping entries,
+//! or changing the archive comment ??without paying to inflate and deflate everything again.
 
 use std::fs::File;
 use std::io::BufWriter;
@@ -41,7 +41,7 @@ fn run() -> Result<(), String> {
     let entries = source.len();
 
     let file = File::create(&to).map_err(|e| format!("{to}: {e}"))?;
-    let mut writer = ZipWriter::new(BufWriter::new(file));
+    let mut writer = ZipWriter::new(BufWriter::new(file)).unwrap();
     let copied = writer
         .copy_from(&mut source)
         .map_err(|e| format!("copy: {e}"))?;

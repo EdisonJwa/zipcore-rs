@@ -82,6 +82,13 @@ pub struct FileOptions {
     pub unix_mode: Option<u32>,
     /// Explicit `(DOS date, DOS time)`. Defaults to the current UTC time.
     pub dos_timestamp: Option<(u16, u16)>,
+    /// Modification time in Unix seconds, written as an extended-timestamp (`0x5455`) field.
+    ///
+    /// When set, this is what readers that understand the field will report, and it keeps
+    /// one-second resolution instead of DOS's two-second rounding. The DOS field is still
+    /// written (derived from this value) so tools that ignore the extra field see approximately
+    /// the right time.
+    pub unix_mtime: Option<u64>,
     /// Per-entry comment.
     pub comment: Option<String>,
     /// Uncompressed size of this entry, when known.
@@ -98,6 +105,7 @@ impl Default for FileOptions {
             compression_level: DEFAULT_COMPRESSION_LEVEL,
             unix_mode: None,
             dos_timestamp: None,
+            unix_mtime: None,
             comment: None,
             size_hint: None,
         }
@@ -133,6 +141,15 @@ impl FileOptions {
         self.dos_timestamp = Some((date, time));
         self
     }
+    /// Record a modification time in Unix seconds, written as an extended-timestamp field.
+    ///
+    /// Prefer this over [`FileOptions::with_dos_timestamp`]: DOS time cannot represent an
+    /// arbitrary instant (two-second resolution, no timezone), so a round trip through it
+    /// silently changes the value.
+    pub fn with_unix_mtime(mut self, seconds: Option<u64>) -> Self {
+        self.unix_mtime = seconds;
+        self
+    }
 
     /// Declare the uncompressed size, enabling ZIP64 reservation for large entries.
     pub fn with_size_hint(mut self, size: u64) -> Self {
@@ -164,11 +181,18 @@ struct CentralRecord {
     zip64_offset: bool,
     /// Host and version byte, preserved verbatim when copying an entry.
     version_made_by: u16,
+    /// Unix modification time carried in the extended-timestamp extra field, if any.
+    unix_mtime: Option<u64>,
 }
 
 enum Encoder {
     Stored,
+    /// miniz_oxide DEFLATE, the default backend.
+    #[cfg_attr(feature = "deflate-zlib-rs", allow(dead_code))]
     Deflate(Box<CompressorOxide>),
+    /// zlib-rs DEFLATE behind `flate2`, used when the `deflate-zlib-rs` feature is on.
+    #[cfg(feature = "deflate-zlib-rs")]
+    DeflateZlib(flate2::write::DeflateEncoder<Vec<u8>>),
     /// A codec that owns its own output buffer. The archive's sink is drained from that buffer
     /// after each write, so the codec never has to own the sink itself ??which is what would
     /// otherwise make the writer self-referential.
@@ -184,6 +208,7 @@ struct EntryState {
     method: u16,
     dos_date: u16,
     dos_time: u16,
+    unix_mtime: Option<u64>,
     comment: Vec<u8>,
     external_attrs: u32,
     header_offset: u64,
@@ -203,7 +228,7 @@ struct EntryState {
 /// use std::io::Write;
 ///
 /// let file = std::fs::File::create("out.zip")?;
-/// let mut writer = zipcore::ZipWriter::new(std::io::BufWriter::new(file));
+/// let mut writer = zipcore::ZipWriter::new(std::io::BufWriter::new(file))?;
 ///
 /// writer.add_file("hello.txt", b"hello", &zipcore::FileOptions::default())?;
 ///
@@ -240,20 +265,71 @@ impl<W: Write + Seek> std::fmt::Debug for ZipWriter<W> {
 
 impl<W: Write + Seek> ZipWriter<W> {
     /// Create a writer with default options.
-    pub fn new(writer: W) -> Self {
+    ///
+    /// Fails if the sink already contains bytes: starting a fresh archive there would overwrite
+    /// or orphan whatever is already written. Use [`ZipWriter::new_append`] to add entries to an
+    /// existing archive instead.
+    #[allow(clippy::new_ret_no_self)]
+    pub fn new(writer: W) -> Result<Self> {
         Self::new_with_options(writer, WriteOptions::default())
     }
 
     /// Create a writer with explicit archive-level options.
-    pub fn new_with_options(writer: W, options: WriteOptions) -> Self {
-        Self {
+    ///
+    /// Fails if the sink is not empty ??see [`ZipWriter::new`].
+    pub fn new_with_options(mut writer: W, options: WriteOptions) -> Result<Self> {
+        // Refuse to scribble over an existing archive. This used to be a `Self` and would
+        // silently destroy everything already in the sink.
+        let len = writer.seek(SeekFrom::End(0)).map_err(Error::Io)?;
+        if len != 0 {
+            return Err(Error::malformed(format!(
+                "the sink already holds {len} bytes; use ZipWriter::new_append to add to an \
+                 existing archive or truncate the sink first"
+            )));
+        }
+        Ok(Self {
             writer,
             options,
             records: Vec::new(),
             current: None,
             finished: false,
             pending_error: None,
+        })
+    }
+
+    /// Create a writer that appends to the archive already in `writer`.
+    ///
+    /// The existing central directory is parsed and rewritten after the new entries, so the
+    /// result is one archive containing the old entries followed by the new ones. The previous
+    /// end-of-central-directory record and central directory are left in the bytes but are no
+    /// longer referenced, which is what every other ZIP implementation does too.
+    ///
+    /// Fails if `writer` does not hold a readable archive, or if it is encrypted or uses a
+    /// feature this crate cannot parse.
+    pub fn new_append<R>(mut writer: W, mut source: R) -> Result<Self>
+    where
+        R: std::io::Read + Seek,
+    {
+        // Parse the source to recover its records, then re-serialise them at finish time.
+        let archive = crate::Archive::new(&mut source)?;
+        let mut records = Vec::with_capacity(archive.len());
+        for entry in archive.entries() {
+            records.push(central_record_from_entry(entry)?);
         }
+
+        // Append at the point the old central directory started, so the orphaned records are
+        // overwritten rather than accumulated on every append.
+        let offset = archive.central_directory_offset();
+        writer.seek(SeekFrom::Start(offset)).map_err(Error::Io)?;
+
+        Ok(Self {
+            writer,
+            options: WriteOptions::default(),
+            records,
+            current: None,
+            finished: false,
+            pending_error: None,
+        })
     }
 
     /// Begin a file entry and return a handle to write its contents.
@@ -281,6 +357,33 @@ impl<W: Write + Seek> ZipWriter<W> {
                 .unwrap_or(Error::Io(io_error)));
         }
         entry.finish()
+    }
+
+    /// Write a symbolic link entry whose content is `target`.
+    ///
+    /// The entry is recorded with the Unix `S_IFLNK` file type so extractors that understand it
+    /// recreate a link instead of a regular file. [`Archive::extract_all`](crate::Archive::extract_all)
+    /// deliberately refuses to materialise it, and reports it in
+    /// [`ExtractReport::skipped_symlinks`](crate::ExtractReport::skipped_symlinks).
+    ///
+    /// This is a Unix-shaped entry: it sets the external attributes accordingly, which other
+    /// platforms ignore. No compression is applied, matching what `zip -y` produces.
+    pub fn add_symlink(&mut self, name: &str, target: &str, options: &FileOptions) -> Result<()> {
+        if target.is_empty() {
+            return Err(Error::malformed("a symbolic link needs a non-empty target"));
+        }
+        // Link targets are stored verbatim; refusing a NUL keeps the entry readable.
+        if target.contains('\0') {
+            return Err(Error::malformed(
+                "a symbolic link target must not contain a NUL byte",
+            ));
+        }
+        let options = FileOptions {
+            compression: Compression::Stored,
+            unix_mode: Some(options.unix_mode.unwrap_or(0o120_777)),
+            ..options.clone()
+        };
+        self.add_file(name, target.as_bytes(), &options)
     }
 
     /// Write a directory entry. A trailing `/` is added if the caller omitted it.
@@ -416,6 +519,7 @@ impl<W: Write + Seek> ZipWriter<W> {
             zip64_sizes,
             zip64_offset,
             version_made_by: entry.version_made_by,
+            unix_mtime: entry.unix_mtime,
         });
         Ok(())
     }
@@ -550,7 +654,13 @@ impl<W: Write + Seek> ZipWriter<W> {
             flags |= FLAG_UTF8;
         }
 
-        let (dos_date, dos_time) = options.dos_timestamp.unwrap_or_else(dos::now);
+        // A recorded Unix mtime wins for the DOS field too, so tools that ignore the extended
+        // field still show approximately the right time.
+        let (dos_date, dos_time) = match (options.unix_mtime, options.dos_timestamp) {
+            (Some(unix), _) => dos::from_unix_seconds(unix),
+            (None, Some(explicit)) => explicit,
+            (None, None) => dos::now(),
+        };
 
         let comment = options
             .comment
@@ -567,7 +677,13 @@ impl<W: Write + Seek> ZipWriter<W> {
         // enough to need them; the offsets are known now, so decide those exactly.
         let zip64_sizes = options.size_hint.is_some_and(needs_zip64);
         let zip64_offset = needs_zip64(header_offset);
-        let extra_len = if zip64_sizes { 4 + 16 } else { 0 };
+        // An extended-timestamp field is 4 bytes of header plus a flags byte and one u32.
+        let timestamp_extra_len = if options.unix_mtime.is_some() {
+            4 + EXTRA_TIMESTAMP_MTIME_LEN
+        } else {
+            0
+        };
+        let extra_len = element_extra_len(zip64_sizes) + timestamp_extra_len;
         let version = if zip64_sizes || zip64_offset {
             45u16
         } else {
@@ -595,6 +711,12 @@ impl<W: Write + Seek> ZipWriter<W> {
             header.extend_from_slice(&0u64.to_le_bytes());
             header.extend_from_slice(&0u64.to_le_bytes());
         }
+        if let Some(unix) = options.unix_mtime {
+            header.extend_from_slice(&EXTRA_EXTENDED_TIMESTAMP.to_le_bytes());
+            header.extend_from_slice(&(EXTRA_TIMESTAMP_MTIME_LEN as u16).to_le_bytes());
+            header.push(EXTENDED_TIMESTAMP_FLAG_MTIME);
+            header.extend_from_slice(&(unix as u32).to_le_bytes());
+        }
         // A partially written local header leaves the sink in an unknown state, so a failure
         // here latches the writer: nothing can be appended to a header that is half out.
         if let Err(error) = self.writer.write_all(&header) {
@@ -611,7 +733,7 @@ impl<W: Write + Seek> ZipWriter<W> {
             Encoder::Stored
         } else {
             match compression {
-                Compression::Deflate => Encoder::Deflate(new_compressor(options.compression_level)),
+                Compression::Deflate => new_deflate_encoder(options.compression_level),
                 #[cfg(feature = "zstd")]
                 Compression::Zstd => {
                     let level = zstd_level(options.compression_level);
@@ -637,6 +759,7 @@ impl<W: Write + Seek> ZipWriter<W> {
             method,
             dos_date,
             dos_time,
+            unix_mtime: options.unix_mtime,
             comment,
             external_attrs,
             header_offset,
@@ -698,6 +821,26 @@ impl<W: Write + Seek> ZipWriter<W> {
             return Ok(buf.len());
         }
 
+        #[cfg(feature = "deflate-zlib-rs")]
+        if matches!(state.encoder, Encoder::DeflateZlib(_)) {
+            let produced = {
+                let encoder = match &mut state.encoder {
+                    Encoder::DeflateZlib(encoder) => encoder,
+                    _ => unreachable!("the branch above tested for a zlib deflate encoder"),
+                };
+                encoder.write_all(buf)?;
+                std::mem::take(encoder.get_mut())
+            };
+            if !produced.is_empty() {
+                self.writer.write_all(&produced)?;
+                state.compressed += produced.len() as u64;
+            }
+            if let Some(error) = self.zip64_overflow(state) {
+                return Err(self.fail(error));
+            }
+            return Ok(buf.len());
+        }
+
         #[cfg(feature = "zstd")]
         if matches!(state.encoder, Encoder::Zstd(_)) {
             let produced = {
@@ -724,7 +867,7 @@ impl<W: Write + Seek> ZipWriter<W> {
             let (consumed, written, status) = {
                 let compressor = match &mut state.encoder {
                     Encoder::Deflate(compressor) => compressor.as_mut(),
-                    _ => unreachable!("only deflate entries reach this loop"),
+                    _ => unreachable!("only miniz deflate entries reach this loop"),
                 };
                 let result = deflate(compressor, remaining, &mut state.out_buf, MZFlush::None);
                 (result.bytes_consumed, result.bytes_written, result.status)
@@ -817,6 +960,14 @@ impl<W: Write + Seek> ZipWriter<W> {
                     }
                 }
             },
+            #[cfg(feature = "deflate-zlib-rs")]
+            Encoder::DeflateZlib(encoder) => {
+                let tail = encoder.finish().map_err(Error::Io)?;
+                if !tail.is_empty() {
+                    self.writer.write_all(&tail).map_err(Error::Io)?;
+                    state.compressed += tail.len() as u64;
+                }
+            }
             #[cfg(feature = "zstd")]
             Encoder::Zstd(encoder) => {
                 // Finishing the frame hands back everything still buffered, including the
@@ -883,6 +1034,7 @@ impl<W: Write + Seek> ZipWriter<W> {
             zip64_sizes: state.zip64_sizes,
             zip64_offset: state.zip64_offset,
             version_made_by: version_made_by(made_by_version),
+            unix_mtime: state.unix_mtime,
         });
         Ok(())
     }
@@ -1006,6 +1158,14 @@ impl<W: Write + Seek> ZipWriter<W> {
             if offset_needs_zip64 {
                 extra.extend_from_slice(&record.header_offset.to_le_bytes());
             }
+        }
+        // The extended-timestamp field goes in the central record too, so a reader that only
+        // looks at the directory still sees the precise time.
+        if let Some(unix) = record.unix_mtime {
+            extra.extend_from_slice(&EXTRA_EXTENDED_TIMESTAMP.to_le_bytes());
+            extra.extend_from_slice(&(EXTRA_TIMESTAMP_MTIME_LEN as u16).to_le_bytes());
+            extra.push(EXTENDED_TIMESTAMP_FLAG_MTIME);
+            extra.extend_from_slice(&(unix as u32).to_le_bytes());
         }
 
         let version = if sizes_need_zip64 || offset_needs_zip64 {
@@ -1134,11 +1294,49 @@ impl<W: Write + Seek> Drop for ZipWriterEntry<'_, W> {
     }
 }
 
+/// Rebuild the writer-side record for an entry read from an existing archive.
+///
+/// Used by [`ZipWriter::new_append`]: the container is re-emitted from the parsed central
+/// directory, so the values must survive the round trip exactly ??including whether the original
+/// used ZIP64 sentinels, since a record that carried one must keep carrying it.
+fn central_record_from_entry(entry: &Entry) -> Result<CentralRecord> {
+    let name = entry.name_raw().to_vec();
+    check_name_len(&name)?;
+    let comment = entry
+        .comment()
+        .map(|comment| comment.as_bytes().to_vec())
+        .unwrap_or_default();
+    if comment.len() > u16::MAX as usize {
+        return Err(Error::malformed("entry comment too long"));
+    }
+    let (dos_date, dos_time) = entry.dos_timestamp();
+    let compressed = entry.compressed_size();
+    let uncompressed = entry.uncompressed_size();
+    let offset = entry.header_offset();
+    Ok(CentralRecord {
+        name,
+        flags: entry.flags() & !FLAG_DATA_DESCRIPTOR,
+        method: entry.method(),
+        dos_date,
+        dos_time,
+        crc32: entry.crc32(),
+        compressed_size: compressed,
+        uncompressed_size: uncompressed,
+        header_offset: offset,
+        external_attrs: entry.external_attrs(),
+        comment,
+        zip64_sizes: needs_zip64(compressed) || needs_zip64(uncompressed),
+        zip64_offset: needs_zip64(offset),
+        version_made_by: entry.version_made_by(),
+        unix_mtime: entry.unix_mtime(),
+    })
+}
+
 /// Reject a name that does not fit the 16-bit length field.
 ///
 /// The cast would otherwise truncate silently, and since the header's own `name_len` field then
 /// disagrees with the bytes actually written, every reader would look for the payload at the
-/// wrong offset — including this crate's.
+/// wrong offset ??including this crate's.
 fn check_name_len(name: &[u8]) -> Result<()> {
     if name.len() > u16::MAX as usize {
         return Err(Error::malformed(format!(
@@ -1147,6 +1345,18 @@ fn check_name_len(name: &[u8]) -> Result<()> {
         )));
     }
     Ok(())
+}
+
+/// Bytes the ZIP64 extended-information field occupies when the sizes need it.
+///
+/// Header (4) plus two 8-byte sizes. Kept as a function so the local header and the central
+/// record cannot drift apart.
+fn element_extra_len(zip64_sizes: bool) -> usize {
+    if zip64_sizes {
+        4 + 16
+    } else {
+        0
+    }
 }
 
 /// A size field value, or the ZIP64 sentinel when the value is carried in the extra field.
@@ -1163,6 +1373,23 @@ fn version_made_by(version: u16) -> u16 {
     (u16::from(HOST_UNIX) << 8) | version
 }
 
+/// Build the DEFLATE encoder the active backend calls for.
+#[cfg(feature = "deflate-zlib-rs")]
+fn new_deflate_encoder(level: u8) -> Encoder {
+    let level = level.min(10);
+    Encoder::DeflateZlib(flate2::write::DeflateEncoder::new(
+        Vec::with_capacity(OUT_BUF_SIZE),
+        flate2::Compression::new(u32::from(level)),
+    ))
+}
+
+/// Build the DEFLATE encoder the active backend calls for.
+#[cfg(not(feature = "deflate-zlib-rs"))]
+fn new_deflate_encoder(level: u8) -> Encoder {
+    Encoder::Deflate(new_compressor(level))
+}
+
+#[cfg_attr(feature = "deflate-zlib-rs", allow(dead_code))]
 fn new_compressor(level: u8) -> Box<CompressorOxide> {
     let mut compressor =
         CompressorOxide::with_format_and_level(DataFormat::Raw, CompressionLevel::DefaultLevel);

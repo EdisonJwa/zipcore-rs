@@ -1,8 +1,8 @@
 #![forbid(unsafe_code)]
 //! A from-scratch, read-only ZIP archive reader.
 //!
-//! `zipcore` parses the ZIP container itself — end of central directory record, ZIP64 records,
-//! central directory, local file headers and data descriptors — and decompresses **Stored** and
+//! `zipcore` parses the ZIP container itself ??end of central directory record, ZIP64 records,
+//! central directory, local file headers and data descriptors ??and decompresses **Stored** and
 //! **Deflate** members in a streaming fashion. It exists because upstreaming a container parser
 //! you control beats inheriting one you cannot.
 //!
@@ -34,7 +34,7 @@
 //! use zipcore::{FileOptions, ZipWriter};
 //!
 //! # fn main() -> Result<(), Box<dyn std::error::Error>> {
-//! let mut writer = ZipWriter::new(std::io::Cursor::new(Vec::new()));
+//! let mut writer = ZipWriter::new(std::io::Cursor::new(Vec::new()))?;
 //! writer.add_file("docs/readme.txt", b"hello", &FileOptions::default())?;
 //! writer.add_file("stored.bin", b"raw bytes", &FileOptions::stored())?;
 //! writer.add_directory("empty", &FileOptions::default())?;
@@ -59,7 +59,7 @@
 //!   instead of panicking. The crate is `#![forbid(unsafe_code)]`.
 //! * Entry names are only converted to filesystem paths through [`Entry::safe_path`], which
 //!   rejects absolute paths, drive-qualified paths, `..` traversal, alternate data streams and
-//!   Windows device names — including the trailing-space and trailing-dot spellings that Win32
+//!   Windows device names ??including the trailing-space and trailing-dot spellings that Win32
 //!   collapses onto them. Extracting a symbolic link entry is refused rather than followed.
 //! * Extraction canonicalises the destination and refuses a write whose parent resolves outside
 //!   it, so a pre-existing junction or symlink inside the destination cannot redirect a member.
@@ -94,7 +94,8 @@ mod util;
 mod write;
 
 pub use crate::archive::{
-    Archive, ExtractLimits, ExtractReport, RawEntryReader, ReadOptions, MAX_IN_MEMORY_ENTRY,
+    Archive, ExtractLimits, ExtractReport, Overwrite, RawEntryReader, ReadOptions,
+    MAX_IN_MEMORY_ENTRY,
 };
 pub use crate::entry::{Compression, Entry};
 pub use crate::error::{Error, Result};

@@ -29,6 +29,16 @@ pub(crate) const EOCD_MAX_SEARCH: u64 = EOCD_LEN as u64 + u16::MAX as u64;
 
 /// Extra field header ID for the ZIP64 extended information field.
 pub(crate) const EXTRA_ZIP64: u16 = 0x0001;
+/// Extra field header ID for the extended timestamp field (UT).
+///
+/// Carries real Unix seconds, so a timestamp survives at one-second resolution instead of the
+/// two-second, 1980-era DOS granularity.
+pub(crate) const EXTRA_EXTENDED_TIMESTAMP: u16 = 0x5455;
+/// Length of an extended-timestamp field that carries only the modification time: a 1-byte flags
+/// word plus one 4-byte Unix time.
+pub(crate) const EXTRA_TIMESTAMP_MTIME_LEN: usize = 5;
+/// Flags byte in the extended timestamp field: bit 0 is "modification time present".
+pub(crate) const EXTENDED_TIMESTAMP_FLAG_MTIME: u8 = 0x01;
 
 /// General purpose bit flags.
 pub(crate) const FLAG_ENCRYPTED: u16 = 1 << 0;

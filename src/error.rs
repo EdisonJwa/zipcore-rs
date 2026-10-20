@@ -49,6 +49,8 @@ pub enum Error {
     IndexOutOfRange { index: usize, len: usize },
     /// The entry name is not safe to use as a relative filesystem path.
     UnsafePath { entry: String, reason: &'static str },
+    /// The destination path already exists and the extraction policy forbids replacing it.
+    AlreadyExists { path: String },
     /// The entry grew past the 4 GiB limit and no ZIP64 field had been reserved for it.
     ///
     /// Set [`FileOptions::size_hint`](crate::FileOptions::size_hint) when writing an entry that
@@ -137,6 +139,12 @@ impl fmt::Display for Error {
             }
             Error::UnsafePath { entry, reason } => {
                 write!(f, "entry `{entry}` is not safe to extract: {reason}")
+            }
+            Error::AlreadyExists { path } => {
+                write!(
+                    f,
+                    "`{path}` already exists and extraction is set not to replace it"
+                )
             }
             Error::Zip64Required { entry } => write!(
                 f,

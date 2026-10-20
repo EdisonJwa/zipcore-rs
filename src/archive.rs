@@ -76,6 +76,31 @@ pub struct ExtractLimits {
     pub max_entries: Option<usize>,
     /// Maximum total number of decompressed bytes to write. `None` means unlimited.
     pub max_total_bytes: Option<u64>,
+    /// What to do when an entry's target path already exists.
+    ///
+    /// Defaults to [`Overwrite::Replace`], matching ordinary unzip behaviour.
+    pub overwrite: Overwrite,
+}
+
+/// What extraction does when the destination path already exists.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
+pub enum Overwrite {
+    /// Replace the existing file. The default.
+    #[default]
+    Replace,
+    /// Refuse to touch it: extraction fails with [`Error::AlreadyExists`].
+    Never,
+    /// Leave the existing file alone and skip the entry, reporting it in
+    /// [`ExtractReport::skipped_existing`].
+    Skip,
+}
+
+impl ExtractReport {
+    /// Paths that already existed and were left untouched under [`Overwrite::Skip`].
+    pub fn skipped_existing_paths(&self) -> &[PathBuf] {
+        &self.skipped_existing
+    }
 }
 
 /// What an extraction actually did.
@@ -85,6 +110,8 @@ pub struct ExtractReport {
     pub written: Vec<PathBuf>,
     /// Names of symbolic link entries that were skipped rather than materialised.
     pub skipped_symlinks: Vec<String>,
+    /// Paths left untouched because they already existed and the policy was [`Overwrite::Skip`].
+    pub skipped_existing: Vec<PathBuf>,
     /// Total number of decompressed bytes actually written for those entries.
     ///
     /// This counts what reached the filesystem, not the size the archive declared, so a header
@@ -204,6 +231,10 @@ pub struct Archive<R: Read + Seek> {
     base_offset: i64,
     options: ReadOptions,
     file_len: u64,
+    /// Absolute offset at which the central directory starts, after any offset correction.
+    /// `ZipWriter::new_append` seeks here so the old records are overwritten rather than
+    /// accumulated.
+    cd_offset: u64,
 }
 
 impl<R: Read + Seek> std::fmt::Debug for Archive<R> {
@@ -230,7 +261,7 @@ impl Archive<MultiVolumeReader> {
     /// Open an archive that was split across several volume files.
     ///
     /// The volumes must be given in order. This covers the ordinary split-file convention
-    /// (`.zip.001`, `.zip.002`, …), which is a plain byte split of one stream; see
+    /// (`.zip.001`, `.zip.002`, ??, which is a plain byte split of one stream; see
     /// [`MultiVolumeReader`] for the naming caveat.
     pub fn open_volumes<I, P>(paths: I) -> Result<Self>
     where
@@ -312,7 +343,7 @@ impl<R: Read + Seek> Archive<R> {
                 effective_cd_offset = derived_cd_offset;
                 // Both values come from the archive, so the difference is not guaranteed to fit
                 // in an i64. Do the subtraction in i128 and refuse anything out of range rather
-                // than overflowing — this is reachable with a forged ZIP64 EOCD.
+                // than overflowing ??this is reachable with a forged ZIP64 EOCD.
                 base_offset = i64::try_from(derived_cd_offset as i128 - cd_offset as i128)
                     .map_err(|_| Error::malformed("offset correction out of range"))?;
             } else {
@@ -333,7 +364,16 @@ impl<R: Read + Seek> Archive<R> {
             base_offset,
             options,
             file_len,
+            cd_offset: effective_cd_offset,
         })
+    }
+
+    /// Absolute offset at which this archive's central directory begins.
+    ///
+    /// This is where [`ZipWriter::new_append`](crate::ZipWriter::new_append) starts writing, so
+    /// appending replaces the old directory instead of leaving it behind.
+    pub fn central_directory_offset(&self) -> u64 {
+        self.cd_offset
     }
 
     /// Number of entries.
@@ -401,7 +441,7 @@ impl<R: Read + Seek> Archive<R> {
     /// compression method this crate cannot decode, and for encrypted entries, whose bytes are
     /// never inspected.
     ///
-    /// Nothing is verified — no CRC-32 and no size check — because the bytes are not interpreted.
+    /// Nothing is verified ??no CRC-32 and no size check ??because the bytes are not interpreted.
     pub fn raw_reader(&mut self, index: usize) -> Result<RawEntryReader<'_, R>> {
         let entry = match self.entries.get(index) {
             Some(entry) => entry.clone(),
@@ -494,7 +534,7 @@ impl<R: Read + Seek> Archive<R> {
     /// On Unix the recorded permission bits are restored after the contents are written,
     /// masked to `0o777` so an archive cannot install a setuid binary.
     pub fn extract_entry(&mut self, index: usize, dest_dir: &Path) -> Result<PathBuf> {
-        self.extract_entry_with_budget(index, dest_dir, None)
+        self.extract_entry_with_budget(index, dest_dir, None, None)
             .map(|(path, _)| path)
     }
 
@@ -505,6 +545,7 @@ impl<R: Read + Seek> Archive<R> {
         index: usize,
         dest_dir: &Path,
         budget: Option<(u64, u64)>,
+        canonical_root: Option<&Path>,
     ) -> Result<(PathBuf, u64)> {
         let entry = match self.entries.get(index) {
             Some(e) => e.clone(),
@@ -525,7 +566,10 @@ impl<R: Read + Seek> Archive<R> {
             return Err(Error::Unsupported("symbolic link entry"));
         }
         if entry.is_dir() {
-            let guarded = self.guard_containment(dest_dir, &out_path)?;
+            let guarded = match canonical_root {
+                Some(root) => self.guard_containment_against(root, dest_dir, &out_path)?,
+                None => self.guard_containment(dest_dir, &out_path)?,
+            };
             fs::create_dir_all(&guarded).map_err(Error::Io)?;
             apply_recorded_mode(&guarded, &entry)?;
             return Ok((guarded, 0));
@@ -536,7 +580,10 @@ impl<R: Read + Seek> Archive<R> {
         }
         // Re-check after the directories exist: a component may have been a pre-existing
         // junction or symlink pointing outside the destination.
-        let out_path = self.guard_containment(dest_dir, &out_path)?;
+        let out_path = match canonical_root {
+            Some(root) => self.guard_containment_against(root, dest_dir, &out_path)?,
+            None => self.guard_containment(dest_dir, &out_path)?,
+        };
 
         let mut options = self.options.clone();
         if options.max_entry_size.is_none() {
@@ -598,13 +645,25 @@ impl<R: Read + Seek> Archive<R> {
     /// destination root. The components after it are already known to be ordinary relative
     /// names, so this is enough to keep every write inside the tree.
     fn guard_containment(&self, dest_dir: &Path, out_path: &Path) -> Result<PathBuf> {
-        // Canonicalise the deepest part that exists, walking back towards the destination.
         let root = match fs::canonicalize(dest_dir) {
             Ok(root) => root,
             // Nothing exists yet: the caller is about to create it, and no reparenting can have
             // happened, so the join is safely inside.
             Err(_) => return Ok(out_path.to_path_buf()),
         };
+        self.guard_containment_against(&root, dest_dir, out_path)
+    }
+
+    /// `guard_containment` with an already-canonicalised destination root.
+    ///
+    /// Extracting many entries canonicalises the same directory once per entry otherwise, which
+    /// showed up as a measurable share of extraction time.
+    fn guard_containment_against(
+        &self,
+        root: &Path,
+        dest_dir: &Path,
+        out_path: &Path,
+    ) -> Result<PathBuf> {
         let parent = match out_path.parent() {
             Some(parent) => parent,
             None => return Ok(out_path.to_path_buf()),
@@ -615,7 +674,7 @@ impl<R: Read + Seek> Archive<R> {
             // has already been checked, so nothing can redirect it.
             Err(_) => return Ok(out_path.to_path_buf()),
         };
-        if !resolved.starts_with(&root) {
+        if !resolved.starts_with(root) {
             return Err(Error::UnsafePath {
                 entry: out_path
                     .strip_prefix(dest_dir)
@@ -640,13 +699,15 @@ impl<R: Read + Seek> Archive<R> {
     /// Extract every entry below `dest_dir`, stopping if `limits` are exceeded.
     ///
     /// Limits are enforced against the bytes actually written, not against the sizes the
-    /// archive declares — a header that understates its size cannot buy extra budget.
+    /// archive declares ??a header that understates its size cannot buy extra budget.
     pub fn extract_all_with_limits(
         &mut self,
         dest_dir: &Path,
         limits: &ExtractLimits,
     ) -> Result<ExtractReport> {
         let mut report = ExtractReport::default();
+        // Canonicalise the destination once: doing it per entry was measurable.
+        let canonical_root = fs::canonicalize(dest_dir).ok();
         for index in 0..self.entries.len() {
             let entry = self.entries[index].clone();
             if entry.is_symlink() {
@@ -673,7 +734,24 @@ impl<R: Read + Seek> Archive<R> {
                     ),
                 });
             }
-            let (path, written) = self.extract_entry_with_budget(index, dest_dir, budget)?;
+            // Apply the overwrite policy before doing any work for this entry.
+            let target = dest_dir.join(entry.safe_path()?);
+            if !entry.is_dir() && target.symlink_metadata().is_ok() {
+                match limits.overwrite {
+                    Overwrite::Replace => {}
+                    Overwrite::Never => {
+                        return Err(Error::AlreadyExists {
+                            path: target.to_string_lossy().into_owned(),
+                        })
+                    }
+                    Overwrite::Skip => {
+                        report.skipped_existing.push(target);
+                        continue;
+                    }
+                }
+            }
+            let (path, written) =
+                self.extract_entry_with_budget(index, dest_dir, budget, canonical_root.as_deref())?;
             report.total_bytes = report.total_bytes.saturating_add(written);
             report.written.push(path);
         }
@@ -891,6 +969,9 @@ fn parse_central_entry(
         || local_header_offset == SENTINEL_U32 as u64
         || disk_start == SENTINEL_U16;
 
+    // The extended-timestamp field is independent of ZIP64, so scan for it unconditionally.
+    let unix_mtime = parse_extended_timestamp(extra);
+
     if need_zip64 {
         let mut found = false;
         let mut walker = SliceReader::new(extra);
@@ -966,5 +1047,35 @@ fn parse_central_entry(
         external_attrs,
         version_made_by,
         comment,
+        unix_mtime,
     })
+}
+
+/// Pull the modification time out of an extended-timestamp (`0x5455`) extra field, if present.
+///
+/// Only the modification time is read: the field can also carry access and creation times, which
+/// this crate does not model. A malformed field is ignored rather than failing the archive, since
+/// it is metadata rather than structure.
+fn parse_extended_timestamp(extra: &[u8]) -> Option<u64> {
+    let mut walker = SliceReader::new(extra);
+    while walker.remaining() >= 4 {
+        let id = walker.u16().ok()?;
+        let size = walker.u16().ok()? as usize;
+        let data = walker.take(size).ok()?;
+        if id != EXTRA_EXTENDED_TIMESTAMP {
+            continue;
+        }
+        // layout: 1 byte of flags, then a 4-byte Unix time per flag bit that is set, in the
+        // order mtime, atime, ctime.
+        let flags = *data.first()?;
+        if flags & EXTENDED_TIMESTAMP_FLAG_MTIME == 0 {
+            return None;
+        }
+        let rest = data.get(1..)?;
+        if rest.len() < 4 {
+            return None;
+        }
+        return Some(u32::from_le_bytes([rest[0], rest[1], rest[2], rest[3]]) as u64);
+    }
+    None
 }

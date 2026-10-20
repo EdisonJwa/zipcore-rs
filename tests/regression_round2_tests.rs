@@ -327,6 +327,7 @@ fn m7_the_total_byte_limit_counts_bytes_actually_written() {
     let limits = ExtractLimits {
         max_entries: None,
         max_total_bytes: Some(1024),
+        overwrite: zipcore::Overwrite::Replace,
     };
     let result = archive.extract_all_with_limits(&dir, &limits);
     let written: u64 = std::fs::read_dir(&dir)
@@ -597,7 +598,7 @@ fn h1_a_retried_finish_ref_never_reports_success_with_fewer_entries() {
         fail_at: cd_start,
         armed: true,
     };
-    let mut writer = ZipWriter::new(sink);
+    let mut writer = ZipWriter::new(sink).unwrap();
     writer
         .add_file("kept.txt", &data, &FileOptions::stored())
         .unwrap();
@@ -628,7 +629,7 @@ fn h1b_a_latched_writer_reports_the_original_cause_repeatedly() {
         fail_at: 400,
         armed: true,
     };
-    let mut writer = ZipWriter::new(sink);
+    let mut writer = ZipWriter::new(sink).unwrap();
     writer
         .add_file("x.bin", &vec![b'a'; 500], &FileOptions::stored())
         .unwrap();
@@ -651,7 +652,7 @@ fn h1b_a_latched_writer_reports_the_original_cause_repeatedly() {
 #[test]
 fn h3_a_size_hint_of_exactly_u32_max_reserves_zip64() {
     let options = FileOptions::default().with_size_hint(u32::MAX as u64);
-    let mut writer = ZipWriter::new(Cursor::new(Vec::new()));
+    let mut writer = ZipWriter::new(Cursor::new(Vec::new())).unwrap();
     writer.add_file("big.bin", b"tiny", &options).unwrap();
     let buf = writer.finish().unwrap().into_inner();
 
@@ -680,7 +681,7 @@ fn h3_a_size_hint_of_exactly_u32_max_reserves_zip64() {
 #[test]
 fn m2_a_name_longer_than_u16_max_is_refused() {
     let long = "n".repeat(70_000);
-    let mut writer = ZipWriter::new(Cursor::new(Vec::new()));
+    let mut writer = ZipWriter::new(Cursor::new(Vec::new())).unwrap();
     let error = writer
         .add_file(&long, b"payload", &FileOptions::stored())
         .expect_err("an over-long name must be refused");
@@ -700,7 +701,7 @@ fn m2_a_name_longer_than_u16_max_is_refused() {
 #[test]
 fn m2b_a_comment_too_long_is_refused_before_anything_is_written() {
     let options = FileOptions::default().with_comment("c".repeat(70_000));
-    let mut writer = ZipWriter::new(Cursor::new(Vec::new()));
+    let mut writer = ZipWriter::new(Cursor::new(Vec::new())).unwrap();
     assert!(writer.add_file("x.txt", b"y", &options).is_err());
     writer
         .add_file("ok.txt", b"z", &FileOptions::stored())
@@ -716,7 +717,8 @@ fn l4_an_archive_comment_that_is_too_long_fails_without_losing_the_entries() {
         comment: Some("c".repeat(70_000)),
         ..WriteOptions::default()
     };
-    let mut writer = ZipWriter::new_with_options(Cursor::new(Vec::new()), options);
+    let mut writer =
+        ZipWriter::new_with_options(Cursor::new(Vec::new()), options).expect("empty sink");
     writer
         .add_file("kept.txt", b"hello", &FileOptions::stored())
         .unwrap();

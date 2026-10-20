@@ -81,7 +81,7 @@ fn without_the_feature_a_zstd_entry_is_refused_with_a_usable_message() {
 }
 
 // ---------------------------------------------------------------------------------------
-// bzip2 (method 12) — decode-only, and a real stream when present
+// bzip2 (method 12) ??decode-only, and a real stream when present
 // ---------------------------------------------------------------------------------------
 
 #[test]
@@ -174,7 +174,7 @@ fn writing_bzip2_is_refused_with_an_actionable_error() {
     use zipcore::{FileOptions, ZipWriter};
 
     // bzip2 is decode-only, and the writer must say so rather than silently storing or deflating.
-    let mut writer = ZipWriter::new(Cursor::new(Vec::new()));
+    let mut writer = ZipWriter::new(Cursor::new(Vec::new())).unwrap();
     let error = writer
         .start_file(
             "data.bz2",
@@ -221,7 +221,7 @@ fn emit_zstd_fixture() {
 
     // Written by this crate's own zstd encoder, so an external tool reading it checks the writer
     // as well as the reader.
-    let mut writer = ZipWriter::new(Cursor::new(Vec::new()));
+    let mut writer = ZipWriter::new(Cursor::new(Vec::new())).unwrap();
     writer
         .add_file(
             "hello.txt",
@@ -389,7 +389,7 @@ fn zstd_entries_can_be_written_and_read_back() {
         ..FileOptions::default()
     };
 
-    let mut writer = ZipWriter::new(Cursor::new(Vec::new()));
+    let mut writer = ZipWriter::new(Cursor::new(Vec::new())).unwrap();
     writer
         .add_file("data.bin", content.as_bytes(), &zstd)
         .unwrap();
@@ -421,7 +421,7 @@ fn a_written_zstd_entry_streams_back_in_small_chunks() {
     use zipcore::{FileOptions, ZipWriter};
 
     let content = "chunky ".repeat(5_000);
-    let mut writer = ZipWriter::new(Cursor::new(Vec::new()));
+    let mut writer = ZipWriter::new(Cursor::new(Vec::new())).unwrap();
     writer
         .add_file(
             "data.bin",

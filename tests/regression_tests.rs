@@ -227,7 +227,7 @@ fn the_total_byte_limit_is_enforced() {
 
 #[test]
 fn writing_an_unsafe_name_is_refused_by_default() {
-    let mut writer = ZipWriter::new(Cursor::new(Vec::new()));
+    let mut writer = ZipWriter::new(Cursor::new(Vec::new())).unwrap();
 
     let result = writer.add_file("../escape.txt", b"x", &FileOptions::stored());
     match result {
@@ -250,7 +250,7 @@ fn unsafe_names_can_be_enabled_explicitly() {
         allow_unsafe_names: true,
         ..WriteOptions::default()
     };
-    let mut writer = ZipWriter::new_with_options(Cursor::new(Vec::new()), options);
+    let mut writer = ZipWriter::new_with_options(Cursor::new(Vec::new()), options).unwrap();
     writer
         .add_file("../escape.txt", b"x", &FileOptions::stored())
         .unwrap();
@@ -303,7 +303,7 @@ fn a_failed_write_latches_and_the_cause_survives_to_finish() {
         // starts at 30-odd and trips the sink.
         fail_at: 30,
     };
-    let mut writer = ZipWriter::new(sink);
+    let mut writer = ZipWriter::new(sink).unwrap();
 
     // The local header fits; a later data write trips the sink once.
     assert!(writer
@@ -331,7 +331,7 @@ fn finish_ref_leaves_the_sink_recoverable_after_a_failure() {
         failures_left: 1,
         fail_at: 0,
     };
-    let mut writer = ZipWriter::new(sink);
+    let mut writer = ZipWriter::new(sink).unwrap();
 
     // The end of central directory record cannot be written.
     assert!(writer.finish_ref().is_err());
@@ -425,7 +425,7 @@ fn a_zero_recorded_mode_leaves_the_default_alone() {
 #[test]
 fn mutated_archives_never_panic() {
     // A stand-in for a fuzz target: deterministic mutations of a valid archive, asserting only
-    // that the reader never panics. It may accept, reject or partially read — never unwind.
+    // that the reader never panics. It may accept, reject or partially read ??never unwind.
     let mut b = ZipBuilder::new();
     b.add_deflate("text.txt", &b"hello world ".repeat(60)[..]);
     b.add_stored("bytes.bin", &b"stored content here"[..]);

@@ -10,10 +10,25 @@ inherited from a dependency whose release history you do not set.
 
 ## Why this exists
 
-The upstream `zip` crate had every version up to and including `9.0.2` yanked in a single
-security response, which broke fresh resolution of every crate that pins it — `calamine`
-included, since `calamine 0.36.1` depends on `zip = "8.6"`. A container implementation with a
-small, stable dependency footprint removes that whole class of exposure.
+You should know where this sits before depending on it, so here is the honest version.
+
+This started when the upstream `zip` crate had a mass yank that broke fresh resolution for
+everything pinning it. **That specific incident is over** — `zip` is published and maintained
+again (9.0.5 at the time of writing) — so "the alternative is broken" is no longer the reason to
+use this.
+
+The reasons that still hold:
+
+- **Two dependencies.** A small, auditable tree rather than a dozen crates and a C toolchain.
+- **No `unsafe`.** The crate is `#![forbid(unsafe_code)]`; the reader is a parser for hostile
+  input, so this is worth more than it looks.
+- **A low MSRV (1.70)** for the default build, where `zip` currently requires 1.88.
+- **Container work is at parity or faster.** Store-only writing matches `zip` to within 1%, and
+  reading the container is 20–35% faster. See [Performance](#performance).
+- **Split volumes and `tar.zst` in one crate**, which `zip` does not offer.
+
+What it deliberately does not do: encryption, LZMA/XZ/PPMd, Deflate64, or writing to a
+non-seekable sink. If you need those, use `zip`.
 
 The dependencies here are deliberately two, and both are mature and low-churn:
 
@@ -46,6 +61,45 @@ costs in dependency surface.
 Minimum supported Rust version is **1.70** for the default build. Enabling a codec raises the
 floor to whatever that codec needs (`bzip2` → 1.82, `zstd` → 1.85); Cargo enforces this rather
 than building something stale.
+
+### Faster Deflate, if you want it
+
+The default backend is `miniz_oxide`, which keeps the dependency count at two and is perfectly
+adequate for archive-shaped workloads. If compression throughput matters more than dependency
+count, swap the compressor:
+
+```toml
+zipcore = { version = "0.1", features = ["deflate-zlib-rs"] }
+```
+
+That pulls `flate2` with the `zlib-rs` backend (still pure Rust, no C toolchain). Measured on a
+36.9 MiB corpus of Rust source: **625 ms → 293 ms** to compress, a **2.1× speedup**, with archive
+size unchanged. Decompression is unaffected — it stays on `miniz_oxide`, which was already the
+faster of the two for inflate.
+
+## Performance
+
+Measured against `zip` 9.0.5 on the same machine, release build with `lto = true`,
+`codegen-units = 1`, warmed up before timing.
+
+| Workload | zipcore | zip | Notes |
+| --- | --- | --- | --- |
+| Write, store-only (36.9 MiB) | 24.9 ms (1484 MiB/s) | 24.8 ms (1488 MiB/s) | container at parity |
+| Write, Deflate L6, same data | 625 ms | 289 ms | see below |
+| Read, store-only | 13.0 ms (2835 MiB/s) | 17.7 ms (2088 MiB/s) | **35% faster** |
+| Read + inflate, 773 KB entry | 1.20 ms | 1.02 ms | 1.17× slower |
+| Open + list 1000 entries | 124 µs | 167 µs | **26% faster** |
+| `read_entry`, whole entry | 1.41 ms | 1.60 ms | **12% faster** |
+
+The Deflate gap is **entirely the compressor backend, not the container**. Forcing `zip` onto
+`flate2`'s pure-Rust backend — which is `miniz_oxide`, the codec used here — makes the two
+indistinguishable (1.01×). `zip`'s default pulls `zlib-rs`, which is roughly twice as fast at
+compressing. Enabling `deflate-zlib-rs` above closes the gap on this side too.
+
+Two honest caveats: extraction to disk is slower here (~2×) because every entry is written to a
+temporary file and renamed only after it verifies, and because the destination is canonicalised
+to refuse writes that escape it. And raw copy (`copy_from`) is ~1.4× slower than `zip`'s
+`merge_archive`.
 
 ## Supported
 
@@ -119,10 +173,12 @@ own off-by-default feature — opting in is a deliberate trade of dependency sur
 | --- | --- | --- |
 | `zstd` | `zstd` — `zstd-safe` — `zstd-sys`, which builds C (plus `cc` and friends as build deps) | reading *and* writing method 93, and streaming zstd for `tar.zst` |
 | `bzip2` | `bzip2` — `libbz2-rs-sys`, **pure Rust** — the crate's default C backend is switched off | reading method 12 |
+| `deflate-zlib-rs` | `flate2` + `zlib-rs`, both **pure Rust** | roughly 2x faster Deflate *compression*; archive output is unchanged in size |
 
 ```text
 cargo build --features zstd
 cargo test --features zstd
+cargo build --features deflate-zlib-rs
 ```
 
 A method this build cannot handle fails with an error that names it, and — where the feature exists
@@ -220,7 +276,7 @@ use std::io::Write;
 use zipcore::{FileOptions, ZipWriter};
 
 let file = std::fs::File::create("out.zip")?;
-let mut writer = ZipWriter::new(std::io::BufWriter::new(file));
+let mut writer = ZipWriter::new(std::io::BufWriter::new(file))?;
 
 // Whole-buffer convenience.
 writer.add_file("docs/readme.txt", b"hello", &FileOptions::default())?;
@@ -264,7 +320,7 @@ is the convenient choice only when you do not.
 use zipcore::{Archive, ZipWriter};
 
 let mut source = Archive::open("in.zip")?;
-let mut writer = ZipWriter::new(std::io::Cursor::new(Vec::new()));
+let mut writer = ZipWriter::new(std::io::Cursor::new(Vec::new()))?;
 writer.copy_from(&mut source)?;      // every payload copied verbatim
 let out = writer.finish()?;
 # Ok::<(), Box<dyn std::error::Error>>(())
@@ -288,13 +344,66 @@ reserved *before* it. Declare large entries up front:
 use zipcore::FileOptions;
 
 let options = FileOptions::default().with_size_hint(5 * 1024 * 1024 * 1024);
-# let mut writer = zipcore::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+# let mut writer = zipcore::ZipWriter::new(std::io::Cursor::new(Vec::new()))?;
 writer.add_file("huge.bin", b"...", &options)?;
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
 An entry that grows past 4 GiB without a hint fails with `Error::Zip64Required` rather than
 emitting a header with a truncated size.
+
+### Appending to an existing archive
+
+`ZipWriter::new` refuses a sink that already holds bytes. To add to an existing archive, open it
+with `new_append`:
+
+```rust
+use zipcore::{Archive, FileOptions, ZipWriter};
+
+let existing = std::fs::read("existing.zip")?;
+// One handle reads the old archive, the other becomes the sink being rewritten.
+let mut writer = ZipWriter::new_append(
+    std::io::Cursor::new(existing.clone()),
+    std::io::Cursor::new(existing),
+)?;
+writer.add_file("added.txt", b"new entry", &FileOptions::default())?;
+let out = writer.finish()?.into_inner();
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+
+The previous central directory is overwritten rather than left behind, so repeated appends grow
+linearly in entry count instead of accumulating dead records.
+
+### Timestamps
+
+`dos_timestamp` is the classic field and is what most tools write, but it has two-second
+resolution and no timezone, so it cannot round-trip an arbitrary instant. Use `with_unix_mtime`
+to record exact Unix seconds in the extended-timestamp field:
+
+```rust
+use zipcore::FileOptions;
+
+let options = FileOptions::default().with_unix_mtime(Some(1_709_210_097));
+# let mut writer = zipcore::ZipWriter::new(std::io::Cursor::new(Vec::new()))?;
+writer.add_file("t.txt", b"x", &options)?;
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+
+Reading it back, `Entry::unix_mtime()` returns those exact seconds, or `None` when the archive
+only recorded a DOS time.
+
+### Symbolic links
+
+`add_symlink` writes a link entry with the correct `S_IFLNK` mode. Extraction deliberately
+refuses to materialise links and reports them in `ExtractReport::skipped_symlinks` instead.
+
+```rust
+use zipcore::FileOptions;
+
+# let mut writer = zipcore::ZipWriter::new(std::io::Cursor::new(Vec::new()))?;
+writer.add_symlink("latest", "releases/v2", &FileOptions::default())?;
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
 
 ## Example CLI
 
@@ -383,12 +492,14 @@ member inside a ZIP container, the other compresses a whole tar stream.
 ### Other known gaps
 
 - No support for writing to a non-seekable sink (no data descriptors), so streaming to a socket
-  or stdout is impossible.
+  or stdout is impossible. `ZipWriter::new_append` covers the append case, not the streaming one.
+- Appending rewrites the central directory in place; it does not merge archives with differing
+  entry sets atomically, so a crash mid-append leaves the truncated file rather than the original.
 - `by_name` is a linear scan, so reading N entries by name from a very large archive is O(N·M).
 - A fresh `CompressorOxide` is allocated per entry, and a normally-written entry still costs three
   seeks (a raw copy needs none).
 - The 4 GiB write path is covered by fixtures, not by an actual multi-gigabyte write.
-- No CI configuration, so the checks above are manual and will rot.
+- No CI configuration yet, so the checks above are still manual.
 - The tar writer emits plain ustar only: no PAX headers, so names beyond 255 bytes, non-ASCII names
   and out-of-range timestamps are refused rather than mangled. No links, xattrs or sparse files.
 - The tar *reader* is experimental and lives in the test suite, not in the crate.

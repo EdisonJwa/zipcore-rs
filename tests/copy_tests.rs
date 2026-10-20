@@ -27,7 +27,7 @@ fn le32(bytes: &[u8]) -> u32 {
 /// Copy entry 0 of `source` into a fresh archive and return its bytes.
 fn copy_one(source: &mut Archive<Cursor<Vec<u8>>>) -> Vec<u8> {
     let entry = source.entries()[0].clone();
-    let mut writer = ZipWriter::new(Cursor::new(Vec::new()));
+    let mut writer = ZipWriter::new(Cursor::new(Vec::new())).unwrap();
     let mut payload = source.raw_reader(0).unwrap();
     writer.add_preserved(&entry, &mut payload).unwrap();
     writer.finish().unwrap().into_inner()
@@ -115,7 +115,7 @@ fn copy_from_copies_every_entry_unchanged() {
         })
         .collect();
 
-    let mut writer = ZipWriter::new(Cursor::new(Vec::new()));
+    let mut writer = ZipWriter::new(Cursor::new(Vec::new())).unwrap();
     assert_eq!(writer.copy_from(&mut source).unwrap(), expected.len());
     let out = writer.finish().unwrap().into_inner();
     let mut dest = open(out);
@@ -257,7 +257,7 @@ fn a_short_payload_is_reported_rather_than_truncating_the_archive() {
     let source = open(b.finish());
     let entry = source.entries()[0].clone();
 
-    let mut writer = ZipWriter::new(Cursor::new(Vec::new()));
+    let mut writer = ZipWriter::new(Cursor::new(Vec::new())).unwrap();
     let mut payload = ShortReader {
         inner: Cursor::new(vec![0u8; 32]),
         budget: 32,
@@ -275,7 +275,7 @@ fn raw_copy_refuses_an_unsafe_name() {
     let mut source = open(b.finish());
     let entry = source.entries()[0].clone();
 
-    let mut writer = ZipWriter::new(Cursor::new(Vec::new()));
+    let mut writer = ZipWriter::new(Cursor::new(Vec::new())).unwrap();
     let mut payload = source.raw_reader(0).unwrap();
     match writer.add_preserved(&entry, &mut payload) {
         Err(Error::UnsafePath { entry, reason }) => {
@@ -359,7 +359,7 @@ fn reading_a_raw_entry_seeks_once_for_the_whole_entry() {
 
     assert_eq!(out.len() as u64, expected);
 
-    // One seek to read the local header, one to position at the payload — and crucially not one
+    // One seek to read the local header, one to position at the payload ??and crucially not one
     // per chunk, which is what reading this way would otherwise cost.
     let chunks = (out.len() + 15) / 16;
     assert!(

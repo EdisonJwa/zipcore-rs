@@ -144,6 +144,11 @@ pub struct Entry {
     pub(crate) external_attrs: u32,
     pub(crate) version_made_by: u16,
     pub(crate) comment: Option<String>,
+    /// Modification time from the extended-timestamp (`0x5455`) extra field, in Unix seconds.
+    ///
+    /// `None` when the archive recorded only a DOS timestamp, which has two-second resolution
+    /// and no timezone.
+    pub(crate) unix_mtime: Option<u64>,
 }
 
 impl Entry {
@@ -197,9 +202,33 @@ impl Entry {
         self.flags & FLAG_DATA_DESCRIPTOR != 0
     }
 
+    /// The raw general-purpose bit flags.
+    pub fn flags(&self) -> u16 {
+        self.flags
+    }
+
+    /// The raw external attributes field (Unix mode in the high 16 bits, DOS bits in the low).
+    pub fn external_attrs(&self) -> u32 {
+        self.external_attrs
+    }
+
+    /// The raw "version made by" field: host system in the high byte.
+    pub fn version_made_by(&self) -> u16 {
+        self.version_made_by
+    }
+
     /// Last modification time as `(DOS date, DOS time)`.
     pub fn dos_timestamp(&self) -> (u16, u16) {
         (self.dos_date, self.dos_time)
+    }
+
+    /// Modification time in Unix seconds, from the extended-timestamp extra field.
+    ///
+    /// Returns `None` when the archive recorded only a DOS timestamp. Prefer this over
+    /// [`Entry::dos_timestamp`] when it is available: DOS time has two-second resolution and no
+    /// timezone, so it cannot round-trip an arbitrary instant.
+    pub fn unix_mtime(&self) -> Option<u64> {
+        self.unix_mtime
     }
 
     /// The Unix `st_mode` from the external attributes, if the archive was made on Unix.
@@ -273,6 +302,7 @@ mod tests {
             external_attrs,
             version_made_by,
             comment: None,
+            unix_mtime: None,
         }
     }
 
