@@ -58,10 +58,12 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - toolchain: "1.70.0"
+          # Measured floors, not aspirations. getrandom 0.4 is an unconditional dependency and
+          # needs 1.85, which sets the floor for every row; deflate64 and aes-crypto add their own.
+          - toolchain: "1.85.1"
             features: ""
             label: "default"
-          - toolchain: "1.75.0"
+          - toolchain: "1.85.1"
             features: "deflate-zlib-rs"
             label: "deflate-zlib-rs"
           - toolchain: "1.85.1"
@@ -70,6 +72,15 @@ jobs:
           - toolchain: "1.85.1"
             features: "bzip2"
             label: "bzip2"
+          - toolchain: "1.85.1"
+            features: "lzma"
+            label: "lzma"
+          - toolchain: "1.85.1"
+            features: "ppmd"
+            label: "ppmd"
+          - toolchain: "1.87.0"
+            features: "deflate64"
+            label: "deflate64"
           - toolchain: "1.89.0"
             features: "aes-crypto"
             label: "aes-crypto"

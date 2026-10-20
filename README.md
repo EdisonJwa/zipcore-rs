@@ -1,12 +1,12 @@
 # zipcore
 
-**A ZIP reader and writer you can audit in an afternoon: no `unsafe`, three direct dependencies, MSRV 1.70.**
+**A ZIP reader and writer you can audit in an afternoon: no `unsafe`, three direct dependencies, and every failure a named error.**
 
 [![Crates.io](https://img.shields.io/crates/v/zipcore.svg)](https://crates.io/crates/zipcore)
 [![Downloads](https://img.shields.io/crates/d/zipcore.svg)](https://crates.io/crates/zipcore)
 [![Documentation](https://docs.rs/zipcore/badge.svg)](https://docs.rs/zipcore)
 [![CI](https://github.com/EdisonJwa/zipcore-rs/actions/workflows/ci.yml/badge.svg)](https://github.com/EdisonJwa/zipcore-rs/actions/workflows/ci.yml)
-[![MSRV](https://img.shields.io/badge/MSRV-1.70-blue.svg)](#minimum-supported-rust-version)
+[![dependencies](https://img.shields.io/badge/dependencies-3-brightgreen.svg)](#why-zipcore)
 [![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#license)
 [![unsafe](https://img.shields.io/badge/unsafe-forbidden-success.svg)](SECURITY.md)
 
@@ -26,74 +26,67 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     for entry in archive.entries() {
         println!("{} ({} bytes)", entry.name(), entry.uncompressed_size());
     }
-    let first = archive.read_entry(0)?;
-    println!("first entry is {} bytes", first.len());
+    println!("first entry is {} bytes", archive.read_entry(0)?.len());
 
     // Write: Stored and Deflate, streamed through the codec.
     let mut writer = ZipWriter::new(Cursor::new(Vec::new()))?;
     writer.add_file("hello.txt", b"hello", &FileOptions::default())?;
     writer.add_directory("docs", &FileOptions::default())?;
-    let bytes = writer.finish()?.into_inner();
-    std::fs::write("out.zip", &bytes)?;
+    std::fs::write("out.zip", writer.finish()?.into_inner())?;
     Ok(())
 }
 ```
 
----
-
 ## Why zipcore
 
 **Three direct dependencies.** The default build depends on `miniz_oxide`, `crc32fast` and
-`getrandom`; with transitive resolution that is five crates total (`adler2` and `cfg-if` are the
-other two). All pure Rust, no C toolchain, no build script that compiles anything — `crc32fast`'s
-only build script probes the rustc version to pick SIMD paths. A ZIP parser reads attacker-controlled
-bytes, so its dependency tree is attack surface; this one fits on one screen.
+`getrandom` — five crates after transitive resolution, all pure Rust, no C toolchain, no build script
+that compiles anything. A ZIP parser reads attacker-controlled bytes, so its dependency tree is attack
+surface; this one fits on one screen.
 
 **No `unsafe`, enforced in CI.** `#![forbid(unsafe_code)]` on the crate, plus a workflow step that
 greps `src/` for the keyword rather than trusting the attribute. For scale: `zip` 9.0.5 contains 27
 `unsafe` occurrences across its 47 source files; this crate contains zero.
 
-**MSRV 1.70.** Old enough for the toolchains products actually stay pinned to, including embedded
-and supply-chain-sensitive builds. `zip` 9.0.5 declares `rust-version = "1.88"`.
+**Errors you can match on.** Every failure is a named variant, and `Error::kind()` groups them into
+categories (`Malformed`, `Unsupported`, `Password`, `LimitExceeded`, `IntegrityFailure`, …) so a
+caller decides what to do without string-matching. A corrupt archive is never returned as data, and a
+failed extraction never leaves a partial file behind.
 
 **Behaviour is specified and tested.** Every limit has a documented default, and every failure is a
 named error variant rather than a number or a silent truncation. 251 tests plus 7 doctests cover the
-`--all-features` build; a deterministic mutation suite corrupts valid archives 5,500 ways and
-requires zero panics; a `cargo-fuzz` target runs in CI; and encryption is checked against real
-archives from 7-Zip 25.01 and `pyzipper` 0.4.0.
+`--all-features` build, a deterministic suite corrupts valid archives 5,500 ways and requires zero
+panics, a `cargo-fuzz` target runs in CI, and encryption is checked against real 7-Zip 25.01 and
+`pyzipper` 0.4.0 archives.
 
 ### Comparison with `zip` 9.0.5
 
 | | zipcore | `zip` 9.0.5 |
 | --- | --- | --- |
-| Direct dependencies enabled by default | **3** | 19 (25 declared, 4 unconditional) |
+| Direct dependencies enabled by default | **3** | 17 of 25 declared |
 | `unsafe` in `src/` | **0** | 27 occurrences |
-| MSRV | **1.70** | 1.88 |
+| Archive comment / append / copy without recompressing | **yes** | yes |
 | Codec breadth | Stored, Deflate, Zstd; decode Deflate64, LZMA, XZ, PPMd, Bzip2 | broader, including the legacy DOS methods |
 | `tar.zst` writer | **yes** | no — ZIP only |
 | Split volumes (`.zip.001`, `.zip.002`, …) | **yes** | no |
 | Encryption | ZipCrypto + WinZip AES-128/192/256 read, 128/256 write | ZipCrypto + WinZip AES |
-| Append to an existing archive | **yes**, via `ZipWriter::new_append` | yes |
 
 ### When `zip` is the better choice
 
 - **You need a decoder for everything.** `zip` ships more methods by default, including the legacy
-  shrink/reduce/implode family. This crate names those in its errors instead of decoding them.
+  shrink/reduce/implode family, which this crate names in errors instead of decoding.
 - **You need floppy-era spanning**, where one entry crosses disks. This crate reads split volumes —
   the `.zip.001` convention and 7-Zip's `-v` switch — and refuses true spans.
 - **You want the widest possible field testing.** `zip` has years of production exposure this crate
   does not, and a much larger user base finding the edge cases first.
 
----
-
 ## Install
 
-```toml
+```
 cargo add zipcore
 ```
 
-Optional capability is opt-in by feature, and each feature is a deliberate trade of dependency
-surface for a method you need:
+Optional capability is opt-in, each feature a deliberate trade of dependency surface for a method:
 
 | Feature | Adds | Enables |
 | --- | --- | --- |
@@ -113,7 +106,10 @@ entry `data.bin` uses compression method 93 (zstd), which this build does not su
 rebuild with the `zstd` feature to enable it
 ```
 
----
+**Compiler requirements.** Rust 1.85 or later for the default build; `deflate64` raises that to 1.87
+and `aes-crypto` to 1.89. This floor is not a selling point — it is simply what the dependencies need
+today, and it rises when they do. `scripts/msrv-check.ps1` builds one job per row so a dependency bump
+cannot move it silently.
 
 ## Reading
 
@@ -122,7 +118,7 @@ directory; a streaming read verifies CRC-32 and declared size as it goes.
 
 ```rust
 use std::io::Read;
-use zipcore::Archive;
+use zipcore::{Archive, ReadOptions};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut archive = Archive::open("data.zip")?;
@@ -130,47 +126,32 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Metadata only: this decompresses nothing.
     for entry in archive.entries() {
-        println!(
-            "{:<32} {:>10} bytes  method={}",
-            entry.name(),
-            entry.uncompressed_size(),
-            entry.compression().name()
-        );
+        println!("{:<32} {:>10}", entry.name(), entry.uncompressed_size());
     }
 
-    // Buffer one entry whole, bounded by `ReadOptions::max_entry_size`.
+    // Buffer one entry whole, bounded by `ReadOptions::max_entry_size` (default 1 GiB).
     let icon = archive.read_entry(0)?;
 
-    // Or stream an entry instead of buffering it. CRC-32 and size are checked at end of stream,
-    // and the borrow is scoped so the archive can be used again afterwards.
+    // Or stream it. CRC-32 and size are checked at end of stream; the borrow is scoped so the
+    // archive can be used again afterwards.
     let mut text = String::new();
     {
         let mut file = archive.by_name("docs/readme.md")?;
         file.read_to_string(&mut text)?;
     }
 
-    println!("{} bytes of text, {} bytes of icon", text.len(), icon.len());
-    Ok(())
-}
-```
-
-Tune reads with `ReadOptions`. The default per-entry ceiling is 1 GiB; `unlimited()` removes it, and
-`offset_correction` (on by default) recovers archives with a prepended self-extractor stub:
-
-```rust
-use zipcore::{Archive, ReadOptions};
-
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Per-open tuning, including decryption:
     let options = ReadOptions::default()
         .with_max_entry_size(Some(16 * 1024 * 1024))
         .with_password("correct horse battery staple");
-    let mut archive = Archive::new_with_options(std::fs::File::open("data.zip")?, options)?;
-    let _len = archive.entries().len();
+    let _tuned = Archive::new_with_options(std::fs::File::open("data.zip")?, options)?;
+    println!("{} bytes of text, {} of icon", text.len(), icon.len());
     Ok(())
 }
 ```
 
----
+`ReadOptions::unlimited()` removes the 1 GiB ceiling for archives you produced, and
+`offset_correction` (on by default) recovers archives with a prepended self-extractor stub.
 
 ## Writing
 
@@ -187,7 +168,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     writer.add_file("hello.txt", b"hello", &FileOptions::default())?;
     writer.add_file("raw.bin", &[0u8; 4096], &FileOptions::stored())?;
-    writer.add_directory("docs", &FileOptions::default())?;
+
+    // Metadata is per entry: Unix mode, exact-second mtime, comment, symlinks.
+    let script = FileOptions::default()
+        .with_unix_mode(0o100_755)
+        .with_unix_mtime(Some(1_709_210_097));
+    writer.add_file("script.sh", b"#!/bin/sh\n", &script)?;
+    writer.add_symlink("latest", "releases/v2", &FileOptions::default())?;
 
     // Stream a payload in pieces instead of holding it in memory.
     let mut entry = writer.start_file("streamed.log", &FileOptions::deflate(9))?;
@@ -196,106 +183,51 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     entry.finish()?;
 
-    let bytes = writer.finish()?.into_inner();
-    println!("{} bytes", bytes.len());
+    println!("{} bytes", writer.finish()?.into_inner().len());
     Ok(())
 }
 ```
 
 `ZipWriter::new` **refuses a sink that already holds bytes**, so an existing archive cannot be
-silently destroyed. `new_append` adds to one, leaving the old records orphaned rather than duplicated:
+silently destroyed. The rest of the writer API — appending, byte-faithful copying, and entries too
+large for a 32-bit size field — works the same way:
 
 ```rust
 use std::io::Cursor;
-use zipcore::{FileOptions, ZipWriter};
+use zipcore::{Archive, FileOptions, ZipWriter};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Append: parse the old central directory and rewrite it after the new entries.
     let mut writer = ZipWriter::new(Cursor::new(Vec::new()))?;
     writer.add_file("first.txt", b"one", &FileOptions::default())?;
     let existing = writer.finish()?.into_inner();
-
     let mut writer = ZipWriter::new_append(Cursor::new(existing.clone()), Cursor::new(existing))?;
     writer.add_file("second.txt", b"two", &FileOptions::default())?;
-    let bytes = writer.finish()?.into_inner();
+    let appended = writer.finish()?.into_inner();
+    assert_eq!(Archive::new(Cursor::new(appended))?.len(), 2);
 
-    assert_eq!(zipcore::Archive::new(Cursor::new(bytes))?.len(), 2);
-    Ok(())
-}
-```
-
-Metadata — Unix mode, exact-second mtime, comment, symlink — is per entry:
-
-```rust
-use std::io::Cursor;
-use zipcore::{FileOptions, ZipWriter};
-
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let options = FileOptions::default()
-        .with_unix_mode(0o100_755)
-        .with_unix_mtime(Some(1_709_210_097))
-        .with_comment("built by the release job");
-    let mut writer = ZipWriter::new(Cursor::new(Vec::new()))?;
-    writer.add_file("script.sh", b"#!/bin/sh\n", &options)?;
-    writer.add_symlink("latest", "releases/v2", &FileOptions::default())?;
-    let bytes = writer.finish()?.into_inner();
-    assert!(!bytes.is_empty());
-    Ok(())
-}
-```
-
-### Re-wrapping without recompressing
-
-`copy_from` copies each payload verbatim: nothing is inflated, nothing is deflated again, so a 660 MB
-archive copies in the time it takes to move the bytes.
-
-```rust
-use std::io::Cursor;
-use zipcore::{Archive, ZipWriter};
-
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Re-wrap without recompressing: payloads are copied verbatim, so a 660 MB archive copies in
+    // the time it takes to move the bytes. A preserved entry keeps its source's method, CRC-32 and
+    // sizes, so one this crate cannot decode copies faithfully and stays undecodable.
     let mut source = Archive::open("in.zip")?;
     let mut writer = ZipWriter::new(Cursor::new(Vec::new()))?;
     let copied = writer.copy_from(&mut source)?;
-    let bytes = writer.finish()?.into_inner();
-    println!("copied {copied} entries into {} bytes", bytes.len());
-    Ok(())
-}
-```
+    println!("copied {copied} entries");
 
-A preserved entry keeps its source's method, CRC-32 and sizes, so an entry this crate cannot decode
-copies faithfully and stays undecodable in the result. The data-descriptor flag is dropped, because
-this writer always records real sizes.
-
-### Entries of 4 GiB or more
-
-The sizes are only known after the payload is written, but the ZIP64 extra field must be reserved
-before it. Declare large entries up front:
-
-```rust
-use std::io::Cursor;
-use zipcore::{FileOptions, ZipWriter};
-
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // 4 GiB+: sizes are only known after the payload is written, but the ZIP64 extra field must be
+    // reserved before it, so declare the size up front. Without a hint, an entry that grows past
+    // 4 GiB fails with `Error::Zip64Required` rather than truncating its size field.
     let mut writer = ZipWriter::new(Cursor::new(Vec::new()))?;
-    let options = FileOptions::default().with_size_hint(5 * 1024 * 1024 * 1024);
-    writer.add_file("huge.bin", b"...", &options)?;
+    let big = FileOptions::default().with_size_hint(5 * 1024 * 1024 * 1024);
+    writer.add_file("huge.bin", b"...", &big)?;
     let bytes = writer.finish()?.into_inner();
-
     // The local header reserved a 20-byte ZIP64 extended-information field.
     assert_eq!(u16::from_le_bytes([bytes[28], bytes[29]]), 20);
     Ok(())
 }
 ```
 
-An entry that grows past 4 GiB without a hint fails with `Error::Zip64Required` rather than emitting a
-header whose size field silently truncates. A preserved entry past 4 GiB needs no hint, because its
-sizes are known before the header is written.
-
----
-
 ## Encryption
-
-Two schemes, and the difference between them is not small.
 
 **ZipCrypto** (traditional PKWARE) needs no feature and reads the large back-catalogue of old
 encrypted archives. It is **not secure** — the keystream is recoverable from roughly a dozen bytes of
@@ -333,8 +265,6 @@ Passwords are `Vec<u8>`, not `String`: the formats encrypt raw bytes, and a pass
 necessarily UTF-8. A wrong password is `Error::WrongPassword` (`error::Kind::Password`), not a CRC
 mismatch on garbage.
 
----
-
 ## Streaming to a sink that cannot seek
 
 Sockets, pipes and `stdout` cannot be seeked, so `ZipWriter` does not apply. `ZipStreamWriter` takes
@@ -348,29 +278,21 @@ use zipcore::FileOptions;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut writer = ZipStreamWriter::new(Cursor::new(Vec::new()))?;
-
     writer.add_file("hello.txt", b"hi", &FileOptions::default())?;
 
     let mut entry = writer.start_file("log.txt", &FileOptions::default())?;
     entry.write_all(b"line one\n")?;
     entry.finish()?;
 
-    let bytes = writer.finish()?.into_inner();
-    println!("{} bytes, written without a single seek", bytes.len());
+    println!("{} bytes, no seeks", writer.finish()?.into_inner().len());
     Ok(())
 }
 ```
 
-Two constraints follow from the format rather than from this implementation:
-
-- **Entries at or past 4 GiB are refused**, not truncated: the ZIP64 extra field cannot be reserved
-  before a size that is not known until the descriptor is written.
-- **Encryption is refused**, because it needs the payload length before the descriptor.
-
-When the sink can seek, prefer `ZipWriter`: no descriptors are needed and the output is the more
-widely compatible shape.
-
----
+Two constraints follow from the format, not from this implementation: **entries at or past 4 GiB are
+refused** (the ZIP64 field cannot be reserved for a size unknown until the descriptor is written),
+and **encryption is refused** (it needs the payload length first). When the sink can seek, prefer
+`ZipWriter`: no descriptors, and the more widely compatible layout.
 
 ## Extraction safety
 
@@ -398,17 +320,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
   alternate data streams, and Windows device names in every spelling Win32 resolves — `CON`/`NUL`,
   `COM0`–`COM9`, `LPT0`–`LPT9`, `CONIN$`/`CONOUT$`/`CLOCK$`, and the superscript-digit variants.
 - **Containment is checked on the filesystem, not just the string.** The destination is canonicalised
-  and a write whose parent — or whose fully resolved target, which catches a pre-existing file
-  symlink — lands outside it is refused. That is what covers a junction already planted in the
-  destination.
+  and a write whose resolved target lands outside it is refused, which is what covers a pre-existing
+  junction or file symlink already planted in the destination.
 - **No partial files.** With `AtomicWrite::Enabled` (the default) each payload is written to a
-  temporary sibling and renamed only after CRC-32 and size verify, so a corrupt entry leaves nothing
-  that looks complete.
+  temporary sibling and renamed only after CRC-32 and size verify.
 - **Symlinks are never materialised.** A symlink entry is refused (single extraction) or skipped and
   reported (bulk extraction), because writing one is how zip-slip becomes arbitrary overwrite.
 - **Limits are charged against bytes actually produced**, never against what the header claims.
-
----
 
 ## Error handling
 
@@ -426,7 +344,7 @@ fn classify(error: &Error) -> &'static str {
         Kind::LimitExceeded => "hit a configured limit",
         Kind::IntegrityFailure => "CRC-32, size or codec rejected the data",
         Kind::NotFound => "no such entry",
-        Kind::WriterFailed => "the writer was already poisoned by an earlier failure",
+        Kind::WriterFailed => "the writer was poisoned by an earlier failure",
         Kind::UnsafeName => "the entry name is unsafe to extract",
         Kind::AlreadyExists => "destination exists and overwrite was refused",
         _ => "i/o or other failure",
@@ -435,9 +353,9 @@ fn classify(error: &Error) -> &'static str {
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let error = Archive::new(std::io::Cursor::new(vec![0u8; 32])).unwrap_err();
-    println!("{}: {error}", classify(&error));
     assert_eq!(error.kind(), Kind::Malformed);
     assert!(!error.is_recoverable());
+    println!("{error}: {}", classify(&error));
     Ok(())
 }
 ```
@@ -449,8 +367,6 @@ could make the same call succeed. `Error` itself is neither `Clone` nor `Partial
 On the write side, **a failed write latches**: the writer stops accepting work and every later call
 reports the original cause, so a partially written entry cannot be appended to a structure that no
 longer adds up. `finish_ref()` then `into_inner()` recovers the sink when you need the bytes.
-
----
 
 ## Performance
 
@@ -475,36 +391,14 @@ Decompression stays on `miniz_oxide`, which was already the faster of the two fo
 
 **Extraction pays for its guarantees.** Each entry costs a `rename` plus a containment
 canonicalisation. `AtomicWrite::Disabled` skips the rename for archives you trust: **200 ms → 143 ms
-(~30%)** on 500 small entries, at the cost of a partial file if an entry fails mid-write.
-
----
-
-## Minimum supported Rust version
-
-**1.70** for the default build. Enabling a feature raises the floor to what that feature's
-dependencies require. Every row is built by CI and re-checked locally by `scripts/msrv-check.ps1`, so
-a dependency raising its own MSRV cannot silently invalidate this table.
-
-| Build | MSRV |
-| --- | --- |
-| default (Stored + Deflate) | **1.70** |
-| `+ deflate-zlib-rs` | 1.75 |
-| `+ ppmd` | 1.82 |
-| `+ lzma` | 1.83 |
-| `+ zstd` | 1.85 |
-| `+ bzip2` | 1.85 |
-| `+ deflate64` | 1.87 |
-| `+ aes-crypto` | 1.89 |
-
----
+(~30%)** on 500 small entries, at the cost of a partial file if one fails mid-write.
 
 ## Testing and verification
 
 CI runs on every push: the default build, `zstd`, `bzip2`, `deflate-zlib-rs`, `aes-crypto` and all
 four combined — plus clippy with `-D warnings`, `cargo fmt --check`, a docs build with warnings
-denied, a check that every README example compiles, the `kitchen_sink` API example executed end to
-end, a grep proving `src/` contains no `unsafe`, a budget on the default dependency count, one job
-per MSRV row, and a time-boxed fuzz run.
+denied, a check that every README example compiles, the `kitchen_sink` example run end to end, a grep
+proving `src/` contains no `unsafe`, a default-dependency budget, one job per MSRV row, and a fuzz run.
 
 | Check | Result |
 | --- | --- |
@@ -513,24 +407,20 @@ per MSRV row, and a time-boxed fuzz run.
 | Deterministic mutation suite | 5,500 corruptions, 0 panics |
 | `cargo clippy --all-targets --all-features -- -D warnings` | clean |
 | `cargo doc --all-features` with `-D warnings` | clean |
-| Rust 1.70 default build | builds clean |
+| Rust 1.85 default build | builds clean |
 | Python `zipfile` reading Stored/Deflate/ZipCrypto output | round-trips |
-| 7-Zip 25.01 and `pyzipper` 0.4.0 reading AES-256 output | decrypts |
-| Us reading 7-Zip and `pyzipper` ZipCrypto/AES archives | extracts correctly |
+| 7-Zip 25.01 / `pyzipper` 0.4.0 reading our AES-256, and us reading theirs | both directions |
 
 Interoperability is tested against real archives, not just this crate's own output — a scheme can be
 internally consistent and still incompatible with every other implementation. The AE-2 zero-CRC rule
-was found exactly that way.
-
-`scripts/check-all.ps1` runs locally what CI runs, with the same flags. `scripts/test-on-linux.sh`
-runs the suite on a Unix host, where path containment and symlink behaviour differ from Windows.
-
----
+was found exactly that way. `scripts/check-all.ps1` runs locally what CI runs, with the same flags;
+`scripts/test-on-linux.sh` runs the suite on a Unix host, where symlink and containment behaviour
+differs from Windows.
 
 ## Known limitations
 
 - **Decoding**: no shrink/reduce/implode (methods 1–6). They are recognised and named in errors.
-- **Spanned archives** (an entry crossing disks) are refused. Split volumes are supported.
+- **Spanned archives** (an entry crossing disks) are refused; split volumes are supported.
 - **Encoding**: Stored, Deflate, and Zstd behind its feature. Deflate64, LZMA, XZ, PPMd and Bzip2 are
   decode-only, because the archives that use them were written by other tools.
 - **The tar writer emits plain ustar**: names up to 255 bytes split across `prefix`/`name`, ASCII
@@ -542,17 +432,11 @@ runs the suite on a Unix host, where path containment and symlink behaviour diff
 - **AES entries are buffered in memory** while being authenticated, because plaintext is not released
   before the HMAC verifies. `max_entry_size` still bounds the decompressed result.
 
----
+## Links and license
 
-## Links
-
-- API documentation: [docs.rs/zipcore](https://docs.rs/zipcore)
-- Changelog: [CHANGELOG.md](CHANGELOG.md)
-- Security policy and threat model: [SECURITY.md](SECURITY.md)
-- Contributing: [CONTRIBUTING.md](CONTRIBUTING.md)
-- License: [MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE), at your option
-
-## License
+- API documentation: [docs.rs/zipcore](https://docs.rs/zipcore) ·
+  changelog [CHANGELOG.md](CHANGELOG.md) · security policy [SECURITY.md](SECURITY.md) ·
+  contributing [CONTRIBUTING.md](CONTRIBUTING.md)
 
 Licensed under either of [Apache License, Version 2.0](LICENSE-APACHE) or [MIT license](LICENSE-MIT)
 at your option.

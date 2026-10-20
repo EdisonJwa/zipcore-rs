@@ -45,6 +45,48 @@ pass over the write path.
   reader review flagged are gone. Documented here because "reviewed and found correct" is worth
   recording.
 
+## [0.10.0] - 2026-10-20
+
+### Changed — the MSRV is no longer a design constraint
+
+The crate used to pin dependencies to protect an advertised 1.70 floor, which meant declining
+upgrades that Rust releases had already made safe. That trade is now dropped: dependencies track
+current releases, and the floor is whatever they require, measured rather than chosen.
+
+- **`getrandom` 0.2 → 0.4.** The 0.2 pin existed solely because 0.4 needs Rust 1.85. It is now on
+  0.4, using `getrandom::fill` instead of the old `getrandom::getrandom`.
+- **MSRV is now 1.85** for the default build (1.87 with `deflate64`, 1.89 with `aes-crypto`).
+  Every row is measured by `scripts/msrv-check.ps1` and built by a dedicated CI job, so it cannot
+  drift unnoticed. It is documented as a compatibility fact, not advertised as a feature.
+- Adopted the APIs that floor unlocks: `io::Error::other`, `Option::is_none_or`, `u64::div_ceil`.
+
+### Added
+
+- **`ZipWriter::get_ref` and `get_mut`.** Reach the underlying sink while the writer still owns it —
+  progress counters, byte budgets, inspecting an in-memory buffer mid-archive.
+- **`examples/inspect.rs`** — metadata listing, an explanation of why a method is unreadable, and
+  per-entry CRC verification via `by_index`/`raw_reader`.
+- **Community files**: `CONTRIBUTING.md`, `CODE_OF_CONDUCT.md` (Contributor Covenant 2.1), issue and
+  pull-request templates, `dependabot.yml`.
+
+### Fixed
+
+- **`add_preserved` now latches on a sink failure.** A failure writing the preserved entry's local
+  header or payload left the writer accepting new work, so `finish()` could return `Ok` after a
+  half-written entry. Every sibling operation already latched. Pinned by `tests/latch_tests.rs`.
+- **`CODE_REVIEW.md` removed.** An internal review record containing the local filesystem path and
+  a catalogue of pre-fix vulnerabilities, public on GitHub since the first commit. Now gitignored
+  with `ANALYSIS.md`.
+
+### Documentation
+
+- **README rewritten** in the shape a widely used crate uses: badges, what it is for, the properties
+  that distinguish it, quick start, per-topic sections each with a compiling example, and tables for
+  features, performance and compiler compatibility. All code blocks are compiled in CI.
+- Corrected factual claims that had drifted: WinZip AES-192 is read but not written (the writer
+  exposes AES-128 and AES-256), and the dependency comparison against `zip` 9.0.5 now uses measured
+  figures (17 of 25 declared dependencies enabled by default; 27 `unsafe` occurrences).
+
 ## [0.9.1] - 2026-10-20
 
 ### Security

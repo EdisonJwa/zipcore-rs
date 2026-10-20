@@ -558,7 +558,7 @@ struct FailingSink {
 impl Write for FailingSink {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         if self.budget == 0 {
-            return Err(io::Error::new(io::ErrorKind::Other, "sink is full"));
+            return Err(io::Error::other("sink is full"));
         }
         let take = buf.len().min(self.budget);
         self.budget -= take;

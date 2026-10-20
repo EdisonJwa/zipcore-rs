@@ -361,7 +361,7 @@ fn reading_a_raw_entry_seeks_once_for_the_whole_entry() {
 
     // One seek to read the local header, one to position at the payload ??and crucially not one
     // per chunk, which is what reading this way would otherwise cost.
-    let chunks = (out.len() + 15) / 16;
+    let chunks = out.len().div_ceil(16);
     assert!(
         chunks > 20,
         "the test should read many chunks, read {chunks}"

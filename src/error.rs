@@ -275,7 +275,7 @@ impl From<Error> for io::Error {
             | Error::WriterFinished
             | Error::WriterFailed { .. }
             | Error::CompressionNotWritable { .. }
-            | Error::Zip64Required { .. } => io::Error::new(io::ErrorKind::Other, e.to_string()),
+            | Error::Zip64Required { .. } => io::Error::other(e.to_string()),
             other => io::Error::new(io::ErrorKind::InvalidData, other.to_string()),
         }
     }

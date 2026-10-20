@@ -408,7 +408,7 @@ impl<R: Read + Seek> Archive<R> {
                 let zip64_eocd_offset = le_u64(&locator[8..16]);
                 if zip64_eocd_offset
                     .checked_add(ZIP64_EOCD_MIN_LEN as u64)
-                    .map_or(true, |end| end > file_len)
+                    .is_none_or(|end| end > file_len)
                 {
                     return Err(Error::malformed("ZIP64 EOCD offset outside the file"));
                 }

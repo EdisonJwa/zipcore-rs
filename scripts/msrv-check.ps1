@@ -1,11 +1,15 @@
 # Verify the crate's stated MSRV is real, on every toolchain it claims.
 #
-# The README promises 1.70 for the default build. That promise silently broke once, when a
+# The floor is whatever the dependencies need, and it is tracked rather than advertised: a
+# dependency bump raising it is acceptable (Rust releases fix things), but it must not happen
+# silently. This script is the check that makes the number real.
+#
+# Historical note: this promised 1.70 for the default build. That promise silently broke once, when a
 # dependency raised its own MSRV during a routine `cargo add`; this script exists so it cannot
 # happen quietly again.
 #
-# Requires rustup toolchains 1.70.0, 1.85.1 and 1.89.0.
-#   rustup toolchain install 1.70.0 1.85.1 1.89.0
+# Requires rustup toolchains 1.85.1, 1.87.0 and 1.89.0.
+#   rustup toolchain install 1.85.1 1.87.0 1.89.0
 #
 # Exit code is non-zero if any claimed floor stops building.
 $ErrorActionPreference = 'Stop'
@@ -19,13 +23,13 @@ New-Item -ItemType Directory -Force -Path $copy | Out-Null
 robocopy $root $copy /E /XD target review .git .github /XF Cargo.lock /NFL /NDL /NJH /NJS /NC /NS | Out-Null
 
 $cases = @(
-  @{ Toolchain = '1.70.0'; Features = '';                                    Label = 'default' }
-  @{ Toolchain = '1.75.0'; Features = 'deflate-zlib-rs';                     Label = 'deflate-zlib-rs' }
+  @{ Toolchain = '1.85.1'; Features = '';                                    Label = 'default' }
+  @{ Toolchain = '1.85.1'; Features = 'deflate-zlib-rs';                     Label = 'deflate-zlib-rs' }
   @{ Toolchain = '1.85.1'; Features = 'bzip2';                               Label = 'bzip2' }
   @{ Toolchain = '1.85.1'; Features = 'zstd';                                Label = 'zstd' }
   @{ Toolchain = '1.89.0'; Features = 'aes-crypto';                          Label = 'aes-crypto' }
-  @{ Toolchain = '1.82.0'; Features = 'ppmd';                                Label = 'ppmd' }
-  @{ Toolchain = '1.83.0'; Features = 'lzma';                                Label = 'lzma' }
+  @{ Toolchain = '1.85.1'; Features = 'ppmd';                                Label = 'ppmd' }
+  @{ Toolchain = '1.85.1'; Features = 'lzma';                                Label = 'lzma' }
   @{ Toolchain = '1.87.0'; Features = 'deflate64';                           Label = 'deflate64' }
 )
 

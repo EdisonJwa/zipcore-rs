@@ -1461,7 +1461,7 @@ impl<W: Write + Seek> ZipWriter<W> {
     fn fail(&mut self, error: Error) -> io::Error {
         let message = error.to_string();
         self.pending_error = Some(error);
-        io::Error::new(io::ErrorKind::Other, message)
+        io::Error::other(message)
     }
 
     fn pending_error_detail(&self) -> String {
@@ -1475,7 +1475,7 @@ impl<W: Write + Seek> ZipWriter<W> {
     fn latched_io_error(&self) -> Option<io::Error> {
         self.pending_error
             .as_ref()
-            .map(|error| io::Error::new(io::ErrorKind::Other, error.to_string()))
+            .map(|error| io::Error::other(error.to_string()))
     }
 
     /// A copy of the latched failure, without clearing it.
@@ -1489,7 +1489,7 @@ impl<W: Write + Seek> ZipWriter<W> {
 fn copy_as_io_error(error: &Error) -> Error {
     match error {
         Error::Io(source) => Error::Io(io::Error::new(source.kind(), source.to_string())),
-        other => Error::Io(io::Error::new(io::ErrorKind::Other, other.to_string())),
+        other => Error::Io(io::Error::other(other.to_string())),
     }
 }
 
@@ -1624,9 +1624,7 @@ pub(crate) fn version_made_by(version: u16) -> u16 {
 /// Used for the ZipCrypto header and the WinZip AES salt. A weak source here would be a real
 /// defect, so it comes from the OS rather than a userspace generator.
 fn fill_random(buf: &mut [u8]) -> Result<()> {
-    // `getrandom` 0.2 spells this `getrandom`; 0.4 renamed it to `fill`. 0.2 is kept deliberately:
-    // it is the newest release that does not require Rust 1.85, and the crate advertises 1.70.
-    getrandom::getrandom(buf).map_err(|error| {
+    getrandom::fill(buf).map_err(|error| {
         Error::malformed(format!("the system random source is unavailable: {error}"))
     })
 }

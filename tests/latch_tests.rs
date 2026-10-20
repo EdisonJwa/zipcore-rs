@@ -25,10 +25,7 @@ impl FailAt {
 impl Write for FailAt {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         if self.budget == 0 {
-            return Err(io::Error::new(
-                io::ErrorKind::Other,
-                "sink budget exhausted",
-            ));
+            return Err(io::Error::other("sink budget exhausted"));
         }
         let n = buf.len().min(self.budget);
         self.budget -= n;

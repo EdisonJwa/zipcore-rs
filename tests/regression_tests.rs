@@ -278,7 +278,7 @@ impl Write for FlakySink {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         if self.failures_left > 0 && self.inner.position() >= self.fail_at {
             self.failures_left -= 1;
-            return Err(io::Error::new(io::ErrorKind::Other, "sink write failed"));
+            return Err(io::Error::other("sink write failed"));
         }
         self.inner.write(buf)
     }

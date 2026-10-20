@@ -81,7 +81,7 @@ fn parse_tar(bytes: &[u8]) -> Vec<ParsedEntry> {
         entries.push(entry);
 
         // Payloads are padded out to a whole number of blocks.
-        let padded = ((size + 511) / 512) * 512;
+        let padded = size.div_ceil(512) * 512;
         position += padded as usize;
     }
 

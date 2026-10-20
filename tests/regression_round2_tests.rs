@@ -574,10 +574,7 @@ impl Write for FailOnceSink {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         if self.armed && self.inner.position() >= self.fail_at {
             self.armed = false;
-            return Err(io::Error::new(
-                io::ErrorKind::Other,
-                "one-shot sink failure",
-            ));
+            return Err(io::Error::other("one-shot sink failure"));
         }
         self.inner.write(buf)
     }
@@ -790,7 +787,7 @@ fn m1_a_tar_sink_failure_poisons_the_writer() {
         fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
             if self.armed && self.inner.position() >= self.fail_at {
                 self.armed = false;
-                return Err(io::Error::new(io::ErrorKind::Other, "tar sink failure"));
+                return Err(io::Error::other("tar sink failure"));
             }
             self.inner.write(buf)
         }

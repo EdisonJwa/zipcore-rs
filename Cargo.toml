@@ -2,7 +2,7 @@
 name = "zipcore"
 version = "0.10.0"
 edition = "2021"
-rust-version = "1.70"
+rust-version = "1.85"
 license = "MIT OR Apache-2.0"
 description = "Streaming ZIP archive reader and writer with ZIP64 support, CRC-32 verification and zip-bomb resistance"
 keywords = ["zip", "archive", "decompression", "parser"]
@@ -31,7 +31,7 @@ bzip2 = { version = "0.5.2", default-features = false, features = ["libbz2-rs-sy
 # Alternative DEFLATE backend behind the `deflate-zlib-rs` feature. Measured roughly 2x faster
 # than miniz_oxide for compression; see the README's performance section.
 flate2 = { version = "1.1", default-features = false, optional = true }
-# WinZip AES dependencies, all behind `aes-crypto`. These require Rust 1.85+, so the feature raises
+# WinZip AES dependencies, all behind `aes-crypto`. These require Rust 1.89+, so the feature raises
 # the crate's MSRV when enabled; the default build is unaffected.
 aes = { version = "0.9", optional = true }
 ctr = { version = "0.10", optional = true }
@@ -39,7 +39,9 @@ hmac = { version = "0.13", optional = true }
 sha1 = { version = "0.11", optional = true }
 pbkdf2 = { version = "0.13", optional = true }
 zeroize = { version = "1.8", optional = true }
-getrandom = { version = "0.2", default-features = false, features = ["std"] }
+# OS randomness for ZipCrypto headers and AES salts. 0.4 (not 0.2) so the crate tracks the
+# current release rather than pinning an old one to protect a compiler floor nobody is on.
+getrandom = { version = "0.4", default-features = false, features = ["std"] }
 # Optional decoders. Each is a separate feature so the default build stays at three direct
 # dependencies; none of these is needed for the formats zips in the wild overwhelmingly use.
 lzma-rs = { version = "0.3", default-features = false, features = ["raw_decoder", "stream"], optional = true }
