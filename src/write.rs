@@ -536,7 +536,9 @@ impl<W: Write + Seek> ZipWriter<W> {
             header.extend_from_slice(&uncompressed_size.to_le_bytes());
             header.extend_from_slice(&compressed_size.to_le_bytes());
         }
-        self.writer.write_all(&header).map_err(Error::Io)?;
+        if let Err(error) = self.writer.write_all(&header) {
+            return Err(self.latch_io(error));
+        }
 
         let mut copied = 0u64;
         let mut buffer = vec![0u8; 64 * 1024];
@@ -559,7 +561,9 @@ impl<W: Write + Seek> ZipWriter<W> {
                     detail,
                 )));
             }
-            self.writer.write_all(&buffer[..read]).map_err(Error::Io)?;
+            if let Err(error) = self.writer.write_all(&buffer[..read]) {
+                return Err(self.latch_io(error));
+            }
             copied += read as u64;
         }
 
@@ -649,6 +653,22 @@ impl<W: Write + Seek> ZipWriter<W> {
     /// Consume the writer and return the sink, without finishing the archive.
     pub fn into_inner(self) -> W {
         self.writer
+    }
+
+    /// Borrow the underlying sink.
+    ///
+    /// Useful when the sink carries its own state — a progress counter, a byte budget, an in-memory
+    /// buffer you want to inspect before deciding whether to finish.
+    pub fn get_ref(&self) -> &W {
+        &self.writer
+    }
+
+    /// Mutably borrow the underlying sink.
+    ///
+    /// The writer tracks its position through seeks rather than cached offsets, so moving the sink
+    /// is safe as long as you do not leave it somewhere the writer does not expect.
+    pub fn get_mut(&mut self) -> &mut W {
+        &mut self.writer
     }
 
     /// Number of entries written so far, excluding one still in progress.
@@ -1413,6 +1433,18 @@ impl<W: Write + Seek> ZipWriter<W> {
 
         self.writer.write_all(&out).map_err(Error::Io)?;
         Ok(out.len() as u64)
+    }
+
+    /// Record a sink failure permanently and return it.
+    ///
+    /// Once part of an entry is on the sink the archive structure cannot be repaired, so every
+    /// later call reports this instead of appending to a stream whose offsets no longer add up.
+    fn latch_io(&mut self, error: io::Error) -> Error {
+        let detail = error.to_string();
+        // `io::Error` is not `Clone`, so the latched copy and the returned one are built from the
+        // same kind and message rather than sharing the value.
+        self.pending_error = Some(Error::Io(io::Error::new(error.kind(), detail.clone())));
+        Error::Io(io::Error::new(error.kind(), detail))
     }
 
     fn zip64_overflow(&self, state: &EntryState) -> Option<Error> {

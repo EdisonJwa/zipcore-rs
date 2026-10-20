@@ -1,0 +1,14 @@
+# Blank issues are disabled: the two templates ask for the environment and reproducer details that
+# otherwise get lost in a first round of questions.
+blank_issues_enabled: false
+
+contact_links:
+  - name: Report a security vulnerability
+    url: https://github.com/EdisonJwa/zipcore-rs/blob/main/SECURITY.md
+    about: >
+      Do not open a public issue for a crash, an escape from the extraction directory, unbounded
+      resource use, or corrupt data returned as valid. SECURITY.md explains GitHub's private
+      advisory reporting and what a useful report contains.
+  - name: Questions and usage help
+    url: https://docs.rs/zipcore
+    about: The API documentation covers reading, writing, extraction, encryption and the feature matrix.

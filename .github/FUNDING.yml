@@ -1,0 +1,14 @@
+# Funding configuration.
+#
+# Intentionally left as comments: there is no sponsorship account yet, and every key GitHub accepts
+# here takes a real account name or URL. Filling it in with a placeholder would either point at
+# something that does not exist or advertise a commitment this project has not made.
+#
+# An all-comment file is treated as "no funding configured", which is the intent. To enable it
+# later, uncomment one key and give it a real value:
+#
+#   github: <username>              # GitHub Sponsors profile
+#   open_collective: <slug>         # Open Collective
+#   custom: ["https://..."]         # any other funding page
+#
+# A single `custom:` entry is the catch-all for anything not on GitHub's supported list.

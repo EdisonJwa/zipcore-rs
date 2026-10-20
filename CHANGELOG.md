@@ -6,6 +6,45 @@ All notable changes to this project are documented here. The format follows
 
 Because this crate is pre-1.0, the minor version is where breaking changes land.
 
+## [0.10.0] - 2026-10-20
+
+Documentation overhaul, community files, and two consistency fixes found by an external review
+pass over the write path.
+
+### Added
+
+- **`ZipWriter::get_ref` and `get_mut`.** Reach the underlying sink while it is still owned by the
+  writer, for progress counters, byte budgets, and inspecting an in-memory buffer mid-archive.
+- **`examples/inspect.rs`** — list an archive's metadata, explain why a method is unreadable, and
+  verify every entry's CRC, using `by_index`/`raw_reader` for data that should not be inflated.
+- **Community files**: `CONTRIBUTING.md`, `CODE_OF_CONDUCT.md` (Contributor Covenant 2.1),
+  issue and pull-request templates, `dependabot.yml`.
+
+### Fixed
+
+- **`add_preserved` now latches on a sink failure.** A failure writing the preserved entry's local
+  header or copying its payload left the writer accepting new work, so `finish()` could succeed
+  after a half-written entry. Every sibling operation already latched; this one did not. Found by
+  review, pinned by `tests/latch_tests.rs`.
+- **`CODE_REVIEW.md` removed from the repository.** It was an internal review record containing
+  the local filesystem path and a catalogue of pre-fix vulnerabilities, and it had been public
+  since the first commit. It is now gitignored alongside `ANALYSIS.md`.
+
+### Changed
+
+- **README rewritten** in the shape a widely used crate uses: badges, a one-paragraph statement of
+  what it is for, the four properties that distinguish it, quick start, then per-topic sections
+  with a compiling example each, and tables for features, performance and MSRV. All 12 code blocks
+  are compiled by `scripts/check-readme-examples.py` in CI.
+
+### Verified
+
+- Review claims against the current tree, re-checked rather than assumed: the ZIP64 boundary
+  comparisons, the central-directory record restoration on failure, tar short-entry padding, and
+  the ZIP64 `disk_start` narrowing all turned out to be fixed already. The i64 offset casts the
+  reader review flagged are gone. Documented here because "reviewed and found correct" is worth
+  recording.
+
 ## [0.9.1] - 2026-10-20
 
 ### Security
@@ -277,6 +316,7 @@ First published release.
   features.
 - A ustar `TarWriter`, including `tar.zst` via `TarWriter::new_zstd`.
 
+[0.10.0]: https://github.com/EdisonJwa/zipcore-rs/compare/v0.9.1...v0.10.0
 [0.9.1]: https://github.com/EdisonJwa/zipcore-rs/compare/v0.9.0...v0.9.1
 [0.9.0]: https://github.com/EdisonJwa/zipcore-rs/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/EdisonJwa/zipcore-rs/compare/v0.7.0...v0.8.0

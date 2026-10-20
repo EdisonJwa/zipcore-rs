@@ -1,0 +1,53 @@
+# Dependabot configuration.
+#
+# Weekly rather than daily: this crate's dependency surface is deliberately small and its MSRV is a
+# published promise, so each bump needs a real check (`scripts/msrv-check.ps1` plus the feature
+# matrix) rather than a stream of noise. CI already runs weekly on a schedule for the same reason —
+# to catch a yanked or regressed dependency even when nothing has been committed.
+version: 2
+updates:
+  # The crate's own dependencies. Grouped so a RustCrypto stack bump arrives as one pull request
+  # instead of six that each fail to build on their own.
+  - package-ecosystem: cargo
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "04:00"
+      timezone: Etc/UTC
+    open-pull-requests-limit: 5
+    groups:
+      routine:
+        patterns:
+          - "*"
+        update-types:
+          - minor
+          - patch
+    labels:
+      - dependencies
+
+  # The fuzz targets have their own manifest and their own lockfile.
+  - package-ecosystem: cargo
+    directory: "/fuzz"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "04:00"
+      timezone: Etc/UTC
+    open-pull-requests-limit: 3
+    labels:
+      - dependencies
+      - fuzzing
+
+  # The actions in .github/workflows/ci.yml.
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "04:00"
+      timezone: Etc/UTC
+    open-pull-requests-limit: 3
+    labels:
+      - dependencies
+      - ci

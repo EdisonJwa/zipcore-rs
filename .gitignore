@@ -12,8 +12,9 @@
 .DS_Store
 Thumbs.db
 
-# Internal analysis, not published
+# Internal analysis and review records, not published
 /ANALYSIS.md
+/CODE_REVIEW.md
 
 # fuzz build artefacts
 /fuzz/target
