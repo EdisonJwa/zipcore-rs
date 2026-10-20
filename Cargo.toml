@@ -39,7 +39,7 @@ hmac = { version = "0.13", optional = true }
 sha1 = { version = "0.11", optional = true }
 pbkdf2 = { version = "0.13", optional = true }
 zeroize = { version = "1.8", optional = true }
-getrandom = { version = "0.2", default-features = false, features = ["std"] }
+getrandom = { version = "0.4", default-features = false, features = ["std"] }
 # Optional decoders. Each is a separate feature so the default build stays at three direct
 # dependencies; none of these is needed for the formats zips in the wild overwhelmingly use.
 lzma-rs = { version = "0.3", default-features = false, features = ["raw_decoder", "stream"], optional = true }
