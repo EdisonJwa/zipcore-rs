@@ -3,15 +3,15 @@
 A from-scratch ZIP archive **reader and writer** in Rust, with no dependencies beyond a DEFLATE
 codec and a CRC-32 implementation.
 
-It parses and emits the container itself ??end of central directory record, ZIP64 records,
-central directory, local file headers ??and streams **Stored** and **Deflate** members in both
+It parses and emits the container itself — end of central directory record, ZIP64 records,
+central directory, local file headers — and streams **Stored** and **Deflate** members in both
 directions. It exists so the container handling is code you control, rather than something
 inherited from a dependency whose release history you do not set.
 
 ## Why this exists
 
 The upstream `zip` crate had every version up to and including `9.0.2` yanked in a single
-security response, which broke fresh resolution of every crate that pins it ??`calamine`
+security response, which broke fresh resolution of every crate that pins it — `calamine`
 included, since `calamine 0.36.1` depends on `zip = "8.6"`. A container implementation with a
 small, stable dependency footprint removes that whole class of exposure.
 
@@ -19,16 +19,39 @@ The dependencies here are deliberately two, and both are mature and low-churn:
 
 | Crate | Role |
 | --- | --- |
-| `miniz_oxide` | DEFLATE (raw inflate and deflate). Pure Rust ??no C toolchain, no build script. |
+| `miniz_oxide` | DEFLATE (raw inflate and deflate). Pure Rust — no C toolchain, no build script. |
 | `crc32fast` | CRC-32/ISO-HDLC verification. |
 
 There is no `unsafe` code: the crate is `#![forbid(unsafe_code)]`.
+
+## Installation
+
+```
+cargo add zipcore
+```
+
+That gives you Stored and Deflate, which covers `.xlsx`, `.docx`, `.epub`, `.jar` and ordinary
+archives. The optional codecs are behind off-by-default features:
+
+```toml
+[dependencies]
+zipcore = "0.1"                                        # Stored + Deflate only
+zipcore = { version = "0.1", features = ["zstd"] }     # + read and write method 93
+zipcore = { version = "0.1", features = ["bzip2"] }    # + read method 12
+```
+
+Both at once is fine: `features = ["zstd", "bzip2"]`. See [Features](#features) for what each one
+costs in dependency surface.
+
+Minimum supported Rust version is **1.70** for the default build. Enabling a codec raises the
+floor to whatever that codec needs (`bzip2` → 1.82, `zstd` → 1.85); Cargo enforces this rather
+than building something stale.
 
 ## Supported
 
 **Reading**
 
-- Stored (method 0) and Deflate (method 8) members ??everything used by `.xlsx`, `.ods`,
+- Stored (method 0) and Deflate (method 8) members — everything used by `.xlsx`, `.ods`,
   `.docx`, `.epub`, `.jar` and ordinary archives.
 - ZIP64 sizes, offsets and entry counts, including resolving sentinels from the ZIP64 extended
   information extra field.
@@ -40,8 +63,8 @@ There is no `unsafe` code: the crate is `#![forbid(unsafe_code)]`.
   permission bits restored (masked to `0o777`), and optional entry-count / total-byte limits.
 - A lossless view of an entry's stored bytes (`Archive::raw_reader`), for copying without
   decompressing.
-- Split archives: `Archive::open_volumes` presents `.zip.001`, `.zip.002`, ??as one seekable
-  stream. Volumes are read in the order given ??there is no reordering magic.
+- Split archives: `Archive::open_volumes` presents `.zip.001`, `.zip.002`, — as one seekable
+  stream. Volumes are read in the order given — there is no reordering magic.
 - **Optional codecs behind off-by-default features**: zstd members (method 93, `zstd`) and bzip2
   (method 12, `bzip2`); see [Features](#features).
 
@@ -58,8 +81,8 @@ There is no `unsafe` code: the crate is `#![forbid(unsafe_code)]`.
   sink is drained from that buffer after each write, so the writer never has to become
   self-referential.
 - Byte-faithful copying between archives. `ZipWriter::add_preserved` and `copy_from` move payloads
-  across without inflating or deflating, so an entry using a method this crate cannot decode ??or
-  one that is encrypted ??still copies intact, at its original compressed size.
+  across without inflating or deflating, so an entry using a method this crate cannot decode — or
+  one that is encrypted — still copies intact, at its original compressed size.
 
 **tar and tar.zst**
 
@@ -67,15 +90,15 @@ There is no `unsafe` code: the crate is `#![forbid(unsafe_code)]`.
   names up to 255 bytes split across the ustar prefix and name fields. Data can be added whole or
   streamed a piece at a time via `start_file`.
 - Because tar needs nothing but `Write`, it composes with a compressor for free:
-  `TarWriter::new_zstd(writer, level)` writes a **`tar.zst`** ??the whole stream compressed at once.
+  `TarWriter::new_zstd(writer, level)` writes a **`tar.zst`** — the whole stream compressed at once.
   That is unrelated to ZIP's zstd *method*, which compresses each member inside a ZIP container;
   the two share only the codec.
 
-## Not supported ??reported as errors, never guessed at
+## Not supported — reported as errors, never guessed at
 
 - **Encryption** (ZipCrypto and AES). Encrypted entries fail with `Error::Encrypted`; the reader
   never returns decrypted-looking garbage.
-- LZMA, Deflate64 and PPMd ??and zstd or bzip2 in a build without their feature. These methods are
+- LZMA, Deflate64 and PPMd — and zstd or bzip2 in a build without their feature. These methods are
   *named*, not anonymous numbers, so an entry reports "method 14 (lzma)" rather than a bare id;
   `Compression::is_supported` says whether the current build can handle one.
 - The legacy shrink / reduce / implode decoders.
@@ -90,20 +113,20 @@ There is no `unsafe` code: the crate is `#![forbid(unsafe_code)]`.
 ## Features
 
 The default build has two dependencies, and every codec beyond Stored and Deflate sits behind its
-own off-by-default feature ??opting in is a deliberate trade of dependency surface for a capability.
+own off-by-default feature — opting in is a deliberate trade of dependency surface for a capability.
 
 | Feature | Pulls in | Gives |
 | --- | --- | --- |
-| `zstd` | `zstd` ??`zstd-safe` ??`zstd-sys`, which builds C (plus `cc` and friends as build deps) | reading *and* writing method 93, and streaming zstd for `tar.zst` |
-| `bzip2` | `bzip2` ??`libbz2-rs-sys`, **pure Rust** ??the crate's default C backend is switched off | reading method 12 |
+| `zstd` | `zstd` — `zstd-safe` — `zstd-sys`, which builds C (plus `cc` and friends as build deps) | reading *and* writing method 93, and streaming zstd for `tar.zst` |
+| `bzip2` | `bzip2` — `libbz2-rs-sys`, **pure Rust** — the crate's default C backend is switched off | reading method 12 |
 
 ```text
 cargo build --features zstd
 cargo test --features zstd
 ```
 
-A method this build cannot handle fails with an error that names it, and ??where the feature exists
-??points at it:
+A method this build cannot handle fails with an error that names it, and — where the feature exists
+ — points at it:
 
 ```text
 entry `data.bin` uses compression method 93 (zstd), which this build does not support;
@@ -167,6 +190,9 @@ Entry data can also be read with a hard cap, or extracted safely below a directo
 ```rust
 use zipcore::ReadOptions;
 
+// `bytes` is the archive's contents — a File, a Cursor over a Vec, or a MultiVolumeReader.
+let bytes = std::fs::read("book.xlsx")?;
+
 let options = ReadOptions {
     max_entry_size: Some(64 * 1024 * 1024),
     ..ReadOptions::default()
@@ -178,7 +204,7 @@ archive.extract_all(std::path::Path::new("out"))?;   // names sanitised, symlink
 ```
 
 Because `Read` can only report `io::Error`, a terminal failure arrives as `InvalidData`. Call
-`ZipFile::take_terminal_error()` to recover the specific `Error` behind it ??`CrcMismatch`,
+`ZipFile::take_terminal_error()` to recover the specific `Error` behind it — `CrcMismatch`,
 `SizeMismatch`, `SizeLimitExceeded` and so on. A failed entry stays failed: every later read
 repeats the error rather than reporting a clean end of stream.
 
@@ -226,8 +252,8 @@ Dropping a `ZipWriterEntry` without calling `finish()` still closes the entry, s
 produces a valid archive rather than a corrupt one. Use `finish()` when you want to observe the
 result.
 
-**A failed write is latched.** If any write fails ??a compressor error, a ZIP64 overflow, or the
-sink refusing bytes ??the writer stops accepting work and every later call reports the original
+**A failed write is latched.** If any write fails — a compressor error, a ZIP64 overflow, or the
+sink refusing bytes — the writer stops accepting work and every later call reports the original
 cause, rather than resuming into a structure that no longer adds up. Use `finish_ref()` followed
 by `into_inner()` when you need the sink back after a failure; `finish()` consumes the writer and
 is the convenient choice only when you do not.
@@ -249,7 +275,7 @@ takes to move the bytes rather than the time it takes to inflate and deflate the
 
 Two details worth knowing. A preserved entry carries its source's compression method, CRC-32 and
 sizes unchanged, which means an entry this crate cannot decode copies fine and stays undecodable
-in the result ??that is fidelity, not a bug. And because the sizes are known before the header is
+in the result — that is fidelity, not a bug. And because the sizes are known before the header is
 written, a preserved entry past 4 GiB is written with correct ZIP64 fields without needing a size
 hint; the data-descriptor flag is dropped, since this writer always records real sizes.
 
@@ -300,7 +326,7 @@ ZIPCORE_ARCHIVES="one.zip;two.xlsx" cargo test --test real_world
 
 `tests/regression_tests.rs` pins each defect found in review, and includes a deterministic
 mutation sweep that truncates and flips bytes of a valid archive 600 ways and asserts the reader
-never panics ??a stand-in for a fuzz target until one exists.
+never panics — a stand-in for a fuzz target until one exists.
 
 Outside the suite, the archive produced by `examples/create` is extracted with PowerShell's
 `Expand-Archive`, with Info-ZIP `unzip -t` and with Python's `zipfile`, and compared byte for
@@ -319,14 +345,14 @@ what follows is the honest remaining state.
 | Environment | Result |
 | --- | --- |
 | Windows 11, rustc 1.95 | 172 tests pass by default, 176 with `bzip2`, 181 with `zstd`, 185 with both (3 Unix-only compiled out); clippy clean in every configuration |
-| WSL2 Ubuntu 24.04, rustc 1.99 | the same four configurations give 156 / 160 / 165 / 169, including the Unix permission-bit tests |
-| MSRV, library | `cargo +1.70.0 check` on the default build is clean on 1.70.0 |
+| WSL2 Ubuntu 24.04, rustc 1.99 | 175 / 179 / 184 / 188 on the same four configurations, including the Unix permission-bit tests |
+| MSRV, library | `cargo +1.70.0 check` on the default build is clean on 1.70.0 (with a lockfile it can parse; the committed `Cargo.lock` is v4, which needs a newer Cargo) |
 | MSRV, per feature | a feature raises the floor to whatever its codec needs, and Cargo enforces it rather than building something stale: `bzip2` needs 1.82 (`libbz2-rs-sys`), `zstd` needs 1.85 (`jobserver`) |
 | Reader, real archives | 67,186 entries across 47 archives (7.2 GB) verify with **0 skipped** |
 | Writer, independent oracles | accepted by Info-ZIP `unzip -t`, Python `zipfile.testzip()` and PowerShell `Expand-Archive`; extraction byte-identical to Python's |
 | Raw copy | 46,169 entries / 660 MB copied with **0 payload mismatches** per Python's `zipfile`; a 553-entry archive copied with both extracted trees comparing equal |
 | Split volumes | a 553-entry archive split into 3 parts reads back with a listing identical to the single-file listing; `unzip -t` on the re-concatenated stream is clean |
-| bzip2 decoding | a Python `zipfile`-produced `ZIP_BZIP2` archive ??5 entries, including an empty one, a 100000-byte high-ratio one and a 300000??077-byte one ??extracts with all five files **byte-identical** to Python's own input. With the feature off the same archive fails with the actionable hint instead |
+| bzip2 decoding | a Python `zipfile`-produced `ZIP_BZIP2` archive — 5 entries, including an empty one, a 100000-byte high-ratio one and a 300000→1077-byte one — extracts with all five files **byte-identical** to Python's own input. With the feature off the same archive fails with the actionable hint instead |
 | Capability reporting | real Python-produced LZMA archives report `lzma` by name and are skipped, not failed |
 | zstd | **Decoding:** a fixture whose frames come from libzstd decodes with CRC-32 and size verified. **Writing:** a method-93 entry produced by `ZipWriter` is read by Windows `tar.exe` (libarchive) and extracts to exactly the expected 6300 bytes, 0 diffs. Bogus payloads, a patched CRC and an over-cap expansion are rejected |
 | tar.zst | a stream written by `TarWriter::new_zstd` is listed by Windows `tar.exe` (libarchive) with correct names, sizes, modes and mtimes, and both extracted files hash identical to the expected content |
@@ -342,7 +368,7 @@ so the default build stays at two dependencies.
 
 | Feature | New dependencies | Notes |
 | --- | --- | --- |
-| lzma / xz decode | 1 direct (`lzma-rust2`, pure Rust) ??9 transitive if its `xz` feature is enabled | `LzmaReader` is an ordinary `Read`, so it fits the codec path already in place. Two obstacles stand in the way: every published version needs rustc 1.85, and the ZIP method-14 header declares a dictionary size, which needs an explicit ceiling first |
+| lzma / xz decode | 1 direct (`lzma-rust2`, pure Rust) — 9 transitive if its `xz` feature is enabled | `LzmaReader` is an ordinary `Read`, so it fits the codec path already in place. Two obstacles stand in the way: every published version needs rustc 1.85, and the ZIP method-14 header declares a dictionary size, which needs an explicit ceiling first |
 | deflate64 decode | 1 | pure Rust |
 | ppmd decode | 1 | pure Rust |
 | ZipCrypto | 1 | a broken cipher, worth decoding only for legacy archives |
