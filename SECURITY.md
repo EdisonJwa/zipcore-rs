@@ -50,8 +50,16 @@ prepared together.
 
 ### Explicitly out of scope
 
-- **Encryption.** AES and ZipCrypto are not implemented. Encrypted entries are refused with
-  `Error::Encrypted` rather than returning garbage.
+- **ZipCrypto confidentiality.** Traditional PKWARE encryption is implemented for
+  compatibility, and **it is broken**. Its keystream is recoverable from roughly a dozen bytes of
+  known plaintext, and the 12-byte header leaks a one-byte check that narrows a password guess to
+  1-in-256. Reading such archives is fine; protecting data with them is not, and this crate will
+  not describe it as secure. Use the `aes-crypto` feature instead.
+- **Password handling.** Passwords are passed as `Vec<u8>` and are not zeroised after use, because
+  the caller owns them. If a password must not linger in memory, the caller has to handle that.
+- **Encrypted payload size.** An encrypted entry is decrypted and authenticated in memory before
+  any plaintext is returned (AES requires this to avoid releasing unauthenticated data), so its
+  whole compressed size is buffered. `max_entry_size` still bounds the decompressed result.
 - **Spoofing through name collisions.** Two entries whose decoded names map to one filesystem
   path (CP437 versus UTF-8) are not de-duplicated; extraction writes both and the last wins.
   This matches other implementations, but do not assume a one-to-one name mapping.
@@ -61,6 +69,13 @@ prepared together.
 
 ## Dependencies
 
-The default build has two: `miniz_oxide` (pure-Rust DEFLATE) and `crc32fast` (CRC-32), both
-widely used and low-churn. Optional codecs (`zstd`, `bzip2`, `deflate-zlib-rs`) are off by
-default and each is documented in the README, including what it costs in dependency surface.
+The default build has three: `miniz_oxide` (pure-Rust DEFLATE), `crc32fast` (CRC-32) and
+`getrandom` (OS randomness, used for encryption headers and salts). All are widely used and
+low-churn. Optional codecs and cryptography (`zstd`, `bzip2`, `deflate-zlib-rs`, `aes-crypto`) are
+off by default and each is documented in the README, including what it costs in dependency
+surface.
+
+`aes-crypto` pulls the RustCrypto stack (`aes`, `ctr`, `hmac`, `sha1`, `pbkdf2`, `zeroize`). Those
+crates are mature and widely deployed but are pre-1.0, so their minor releases can break; pin or
+audit accordingly. AES-CTR is used with a random 16-byte salt per entry, which is the property that
+makes counter reuse impossible across entries.

@@ -291,6 +291,147 @@ enum Input<'a, R: Read + Seek> {
     Deflate(DeflateInput<'a, R>),
     /// A codec from another crate that owns a bounded view of the archive.
     Codec(Box<dyn Read + 'a>),
+    /// Fully decoded plaintext for an encrypted entry.
+    ///
+    /// Encryption forces this shape: WinZip AES authenticates the entire payload with HMAC before
+    /// any of it may be trusted, so the bytes have to be materialised before the first one is
+    /// handed out. The size ceiling still applies, and decompression uses the bounded miniz
+    /// entry points.
+    Plain { data: Vec<u8>, pos: usize },
+}
+
+/// Read, decrypt, authenticate and decompress an encrypted entry into memory.
+///
+/// The whole payload has to be materialised because WinZip AES authenticates it with HMAC before
+/// any plaintext may be trusted; releasing bytes progressively would mean handing out data that
+/// could still turn out to be forged. Both schemes are also cheap enough that a second streaming
+/// path would be more risk than it is worth.
+fn decrypt_entry<R: Read + Seek>(
+    reader: &mut R,
+    entry: &Entry,
+    data_start: u64,
+    options: &ReadOptions,
+) -> Result<Vec<u8>> {
+    let password = match &options.password {
+        Some(password) => password,
+        None => {
+            return Err(Error::Encrypted {
+                entry: entry.name.clone(),
+            })
+        }
+    };
+
+    // A declared-size ceiling is applied before allocating anything.
+    let ceiling = options.max_entry_size;
+
+    reader
+        .seek(SeekFrom::Start(data_start))
+        .map_err(Error::Io)?;
+
+    // The encrypted payload is the entry's compressed size; it cannot exceed the archive itself,
+    // and `compressed_size` was validated against the file length when the directory was parsed.
+    // The size was validated against the file length when the directory was parsed, and `read_exact`
+    // fails cleanly if the archive is truncated under us.
+    let mut sealed = vec![0u8; entry.compressed_size as usize];
+    reader.read_exact(&mut sealed).map_err(Error::Io)?;
+
+    let scheme = encryption_scheme(entry)?;
+    #[allow(unreachable_patterns)]
+    let plain = match scheme {
+        crate::crypto::Scheme::ZipCrypto => {
+            // The 12-byte header's check byte, then the payload.
+            let check = if entry.flags() & crate::spec::FLAG_DATA_DESCRIPTOR != 0 {
+                crate::crypto::zipcrypto::CheckByte::DosTime(entry.dos_timestamp().1)
+            } else {
+                crate::crypto::zipcrypto::CheckByte::Crc(entry.crc32())
+            };
+            if sealed.len() < crate::crypto::zipcrypto::HEADER_LEN {
+                return Err(Error::malformed(
+                    "encrypted entry is shorter than its header",
+                ));
+            }
+            crate::crypto::zipcrypto::decrypt(password, check, &sealed)?
+        }
+        #[cfg(feature = "aes-crypto")]
+        crate::crypto::Scheme::Aes(strength) => {
+            crate::crypto::aes::decrypt(password, strength, &sealed)?
+        }
+        // Without the feature the entry is reported as needing it.
+        #[allow(unreachable_patterns)]
+        _ => unreachable!("AES without the feature is rejected by encryption_scheme"),
+    };
+
+    // Now decompress the plaintext according to the real method.
+    let method = entry
+        .aes
+        .map(|info| info.actual_method)
+        .unwrap_or_else(|| entry.method());
+    let out = match Compression::from_method(method) {
+        Compression::Stored => plain,
+        Compression::Deflate => {
+            let limit = ceiling.unwrap_or(u64::MAX);
+            if plain.len() as u64 > limit.saturating_mul(1032) {
+                // A DEFLATE stream cannot expand by more than ~1032x.
+                return Err(Error::SizeLimitExceeded {
+                    entry: entry.name.clone(),
+                    limit,
+                });
+            }
+            miniz_oxide::inflate::decompress_to_vec(&plain).map_err(|_| {
+                Error::malformed("encrypted entry's payload is not a valid DEFLATE stream")
+            })?
+        }
+        #[cfg(feature = "zstd")]
+        Compression::Zstd => zstd::stream::decode_all(plain.as_slice()).map_err(Error::Io)?,
+        #[cfg(feature = "bzip2")]
+        Compression::Bzip2 => {
+            let mut out = Vec::new();
+            bzip2::read::BzDecoder::new(plain.as_slice())
+                .read_to_end(&mut out)
+                .map_err(Error::Io)?;
+            out
+        }
+        other => {
+            return Err(Error::UnsupportedCompression {
+                entry: entry.name.clone(),
+                method: other.method_id(),
+            })
+        }
+    };
+
+    if let Some(limit) = ceiling {
+        if out.len() as u64 > limit {
+            return Err(Error::SizeLimitExceeded {
+                entry: entry.name.clone(),
+                limit,
+            });
+        }
+    }
+    Ok(out)
+}
+
+/// Which encryption scheme an entry uses, or an error explaining what is missing.
+fn encryption_scheme(entry: &Entry) -> Result<crate::crypto::Scheme> {
+    if entry.method() == crate::spec::METHOD_WINZIP_AES || entry.aes.is_some() {
+        #[cfg(feature = "aes-crypto")]
+        {
+            let strength = entry
+                .aes
+                .and_then(|info| crate::crypto::aes::Strength::from_byte(info.strength))
+                .ok_or_else(|| {
+                    Error::malformed("WinZip AES entry has a missing or invalid strength byte")
+                })?;
+            return Ok(crate::crypto::Scheme::Aes(strength));
+        }
+        #[cfg(not(feature = "aes-crypto"))]
+        {
+            return Err(Error::UnsupportedCompression {
+                entry: entry.name.clone(),
+                method: crate::spec::METHOD_WINZIP_AES,
+            });
+        }
+    }
+    Ok(crate::crypto::Scheme::ZipCrypto)
 }
 
 /// Build the decoder for a method handled by an external codec.
@@ -367,6 +508,21 @@ impl<'a, R: Read + Seek> ZipFile<'a, R> {
         data_start: u64,
         options: ReadOptions,
     ) -> Result<Self> {
+        // An encrypted entry is fully decrypted (and, for AES, authenticated) before anything is
+        // handed out, so it bypasses the streaming paths entirely.
+        if entry.is_encrypted() {
+            let data = decrypt_entry(reader, &entry, data_start, &options)?;
+            return Ok(ZipFile {
+                entry,
+                options,
+                input: Input::Plain { data, pos: 0 },
+                produced: 0,
+                crc: crc32fast::Hasher::new(),
+                finished: false,
+                terminal_error: None,
+            });
+        }
+
         let compression = entry.compression();
         let input = match compression {
             Compression::Stored => {
@@ -485,7 +641,12 @@ impl<'a, R: Read + Seek> ZipFile<'a, R> {
         }
         if self.options.verify_crc {
             let actual = self.crc.clone().finalize();
-            if actual != self.entry.crc32 {
+            // AE-2 (the WinZip AES convention) deliberately writes a zero CRC-32 because the
+            // HMAC already authenticates the payload; checking it would reject every such entry.
+            let crc_is_meaningful = !(self.entry.is_aes()
+                && self.entry.aes.is_some_and(|info| info.vendor_version >= 2)
+                && self.entry.crc32 == 0);
+            if crc_is_meaningful && actual != self.entry.crc32 {
                 return Some(Error::CrcMismatch {
                     entry: self.entry.name.clone(),
                     expected: self.entry.crc32,
@@ -579,6 +740,29 @@ impl<'a, R: Read + Seek> ZipFile<'a, R> {
             _ => unreachable!("read_codec called for an entry with no codec"),
         }
     }
+
+    fn read_plain(&mut self, buf: &mut [u8]) -> Result<usize> {
+        let budget = budget_for(
+            self.entry.name.as_str(),
+            &self.options,
+            self.produced,
+            self.entry.uncompressed_size,
+        );
+        let Input::Plain { data, pos } = &mut self.input else {
+            unreachable!("read_plain called for a non-plain entry");
+        };
+        let remaining = data.len().saturating_sub(*pos);
+        if remaining == 0 {
+            return Ok(0);
+        }
+        if budget.allowance == 0 {
+            return Err(budget.limit_error());
+        }
+        let want = buf.len().min(remaining).min(budget.allowance as usize);
+        buf[..want].copy_from_slice(&data[*pos..*pos + want]);
+        *pos += want;
+        Ok(want)
+    }
 }
 
 impl<R: Read + Seek> Read for ZipFile<'_, R> {
@@ -595,10 +779,13 @@ impl<R: Read + Seek> Read for ZipFile<'_, R> {
 
         let stored = matches!(self.input, Input::Stored { .. });
         let deflate = matches!(self.input, Input::Deflate(_));
+        let plain = matches!(self.input, Input::Plain { .. });
         let outcome = if stored {
             self.read_stored(buf)
         } else if deflate {
             self.read_deflate(buf)
+        } else if plain {
+            self.read_plain(buf)
         } else {
             self.read_codec(buf)
         };

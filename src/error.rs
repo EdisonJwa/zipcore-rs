@@ -21,7 +21,14 @@ pub enum Error {
     /// A well-formed feature that this reader does not implement.
     Unsupported(&'static str),
     /// The entry is encrypted. We fail closed instead of returning gibberish.
+    ///
+    /// Only produced when no password was supplied; see [`Error::WrongPassword`].
     Encrypted { entry: String },
+    /// A password was supplied but did not decrypt the entry.
+    ///
+    /// For traditional PKWARE encryption this is detected by the 12-byte header's check byte. For
+    /// AES it is detected by the password verifier or, if that collides, by the authentication code.
+    WrongPassword,
     /// A compression method that this build does not implement.
     UnsupportedCompression { entry: String, method: u16 },
     /// This build can read the method but cannot write it.
@@ -88,7 +95,13 @@ impl fmt::Display for Error {
             Error::Malformed(msg) => write!(f, "malformed archive: {msg}"),
             Error::Unsupported(feature) => write!(f, "unsupported archive feature: {feature}"),
             Error::Encrypted { entry } => {
-                write!(f, "entry `{entry}` is encrypted, which is not supported")
+                write!(
+                    f,
+                    "entry `{entry}` is encrypted; supply a password to read it"
+                )
+            }
+            Error::WrongPassword => {
+                write!(f, "the password did not decrypt the entry")
             }
             Error::UnsupportedCompression { entry, method } => {
                 let compression = crate::entry::Compression::from_method(*method);

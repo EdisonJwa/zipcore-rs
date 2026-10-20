@@ -50,6 +50,11 @@ pub struct WriteOptions {
     pub compression_level: u8,
     /// Archive-level comment, written after the end of central directory record.
     pub comment: Option<String>,
+    /// Password used for entries whose [`FileOptions::encryption`] is set.
+    ///
+    /// Required when any entry is encrypted; writing one without it fails rather than falling
+    /// back to an empty password.
+    pub password: Option<Vec<u8>>,
     /// Whether member names that are unsafe to extract are permitted.
     ///
     /// Off by default. With it off, [`ZipWriter`] refuses to create an archive containing a
@@ -65,11 +70,36 @@ impl Default for WriteOptions {
             compression: Compression::Deflate,
             compression_level: DEFAULT_COMPRESSION_LEVEL,
             comment: None,
+            password: None,
             allow_unsafe_names: false,
         }
     }
 }
 
+/// How to encrypt an entry.
+///
+/// Both schemes are readable by other tools. They are not equally safe, and the difference is not
+/// subtle:
+///
+/// | | `ZipCrypto` | `Aes256` |
+/// |---|---|---|
+/// | Dependencies | none | `aes-crypto` feature |
+/// | Confidentiality | **broken** (known-plaintext attack) | sound |
+/// | Authentication | none (CRC-32 only) | HMAC-SHA1 |
+/// | Use for | reading legacy archives, compatibility | anything that matters |
+///
+/// `ZipCrypto` is offered because a great many old archives use it and refusing to read them is
+/// unhelpful. It is *not* a way to protect data. Prefer [`Encryption::Aes256`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum Encryption {
+    /// Traditional PKWARE encryption. Insecure; for compatibility only.
+    ZipCrypto,
+    /// WinZip AES-256 (AE-2). Requires the `aes-crypto` feature.
+    Aes256,
+    /// WinZip AES-128 (AE-2). Requires the `aes-crypto` feature.
+    Aes128,
+}
 /// Per-entry settings.
 #[derive(Debug, Clone)]
 pub struct FileOptions {
@@ -82,6 +112,10 @@ pub struct FileOptions {
     pub unix_mode: Option<u32>,
     /// Explicit `(DOS date, DOS time)`. Defaults to the current UTC time.
     pub dos_timestamp: Option<(u16, u16)>,
+    /// Encrypt this entry with the given scheme.
+    ///
+    /// `None` writes a plain entry. See [`Encryption`] for the trade-off between the two schemes.
+    pub encryption: Option<Encryption>,
     /// Modification time in Unix seconds, written as an extended-timestamp (`0x5455`) field.
     ///
     /// When set, this is what readers that understand the field will report, and it keeps
@@ -106,6 +140,7 @@ impl Default for FileOptions {
             unix_mode: None,
             dos_timestamp: None,
             unix_mtime: None,
+            encryption: None,
             comment: None,
             size_hint: None,
         }
@@ -183,6 +218,9 @@ struct CentralRecord {
     version_made_by: u16,
     /// Unix modification time carried in the extended-timestamp extra field, if any.
     unix_mtime: Option<u64>,
+    /// WinZip AES metadata: (vendor version, strength byte, real method). Written back into the
+    /// `0x9901` extra field of the central record.
+    aes: Option<(u16, u8, u16)>,
 }
 
 enum Encoder {
@@ -219,6 +257,19 @@ struct EntryState {
     compressed: u64,
     encoder: Encoder,
     out_buf: Vec<u8>,
+    /// (vendor version, strength, real method) when the entry is WinZip AES encrypted.
+    aes: Option<(u16, u8, u16)>,
+    /// Set when the entry is encrypted. Payload bytes are accumulated here instead of going to the
+    /// sink, because AES puts its authentication code *after* the data and the size fields must be
+    /// known before the header can be patched.
+    pending: Option<Pending>,
+}
+
+/// Encryption state for the entry currently being written.
+struct Pending {
+    scheme: Encryption,
+    /// Compressed-but-not-yet-encrypted payload.
+    payload: Vec<u8>,
 }
 
 /// Builds a ZIP archive.
@@ -520,6 +571,9 @@ impl<W: Write + Seek> ZipWriter<W> {
             zip64_offset,
             version_made_by: entry.version_made_by,
             unix_mtime: entry.unix_mtime,
+            aes: entry
+                .aes
+                .map(|info| (info.vendor_version, info.strength, info.actual_method)),
         });
         Ok(())
     }
@@ -653,6 +707,23 @@ impl<W: Write + Seek> ZipWriter<W> {
         if !encoded_name.is_ascii() {
             flags |= FLAG_UTF8;
         }
+        if options.encryption.is_some() {
+            flags |= FLAG_ENCRYPTED;
+        }
+        // WinZip AES is announced by method 99 in the headers, with the real method moved into
+        // the 0x9901 extra field. ZipCrypto keeps the real method in place.
+        let is_aes = matches!(
+            options.encryption,
+            Some(Encryption::Aes256) | Some(Encryption::Aes128)
+        );
+        // The method actually used inside the payload; AES moves it into the extra field and puts
+        // 99 in the header instead.
+        let real_method = method;
+        let method = if is_aes {
+            crate::spec::METHOD_WINZIP_AES
+        } else {
+            method
+        };
 
         // A recorded Unix mtime wins for the DOS field too, so tools that ignore the extended
         // field still show approximately the right time.
@@ -683,7 +754,12 @@ impl<W: Write + Seek> ZipWriter<W> {
         } else {
             0
         };
-        let extra_len = element_extra_len(zip64_sizes) + timestamp_extra_len;
+        let aes_extra_len = if is_aes {
+            4 + crate::spec::EXTRA_WINZIP_AES_LEN
+        } else {
+            0
+        };
+        let extra_len = element_extra_len(zip64_sizes) + timestamp_extra_len + aes_extra_len;
         let version = if zip64_sizes || zip64_offset {
             45u16
         } else {
@@ -716,6 +792,18 @@ impl<W: Write + Seek> ZipWriter<W> {
             header.extend_from_slice(&(EXTRA_TIMESTAMP_MTIME_LEN as u16).to_le_bytes());
             header.push(EXTENDED_TIMESTAMP_FLAG_MTIME);
             header.extend_from_slice(&(unix as u32).to_le_bytes());
+        }
+        if is_aes {
+            header.extend_from_slice(&crate::spec::EXTRA_WINZIP_AES.to_le_bytes());
+            header.extend_from_slice(&(crate::spec::EXTRA_WINZIP_AES_LEN as u16).to_le_bytes());
+            header.extend_from_slice(&2u16.to_le_bytes()); // vendor version: AE-2
+            header.extend_from_slice(b"AE"); // vendor id
+            header.push(if options.encryption == Some(Encryption::Aes128) {
+                1
+            } else {
+                3
+            });
+            header.extend_from_slice(&real_method.to_le_bytes());
         }
         // A partially written local header leaves the sink in an unknown state, so a failure
         // here latches the writer: nothing can be appended to a header that is half out.
@@ -770,6 +858,23 @@ impl<W: Write + Seek> ZipWriter<W> {
             compressed: 0,
             encoder,
             out_buf: vec![0u8; OUT_BUF_SIZE],
+            aes: if is_aes {
+                Some((
+                    2,
+                    if options.encryption == Some(Encryption::Aes128) {
+                        1
+                    } else {
+                        3
+                    },
+                    real_method,
+                ))
+            } else {
+                None
+            },
+            pending: options.encryption.map(|scheme| Pending {
+                scheme,
+                payload: Vec::new(),
+            }),
         });
         Ok(())
     }
@@ -804,6 +909,22 @@ impl<W: Write + Seek> ZipWriter<W> {
         }
     }
 
+    /// Hand compressed payload bytes onward: buffered when the entry is encrypted, straight to the
+    /// sink otherwise.
+    fn emit(&mut self, state: &mut EntryState, data: &[u8]) -> io::Result<()> {
+        match &mut state.pending {
+            Some(pending) => {
+                pending.payload.extend_from_slice(data);
+                Ok(())
+            }
+            None => {
+                self.writer.write_all(data)?;
+                state.compressed += data.len() as u64;
+                Ok(())
+            }
+        }
+    }
+
     fn pump(&mut self, state: &mut EntryState, buf: &[u8]) -> io::Result<usize> {
         if buf.is_empty() {
             return Ok(0);
@@ -816,8 +937,7 @@ impl<W: Write + Seek> ZipWriter<W> {
         state.uncompressed += buf.len() as u64;
 
         if matches!(state.encoder, Encoder::Stored) {
-            self.writer.write_all(buf)?;
-            state.compressed += buf.len() as u64;
+            self.emit(state, buf)?;
             return Ok(buf.len());
         }
 
@@ -832,8 +952,7 @@ impl<W: Write + Seek> ZipWriter<W> {
                 std::mem::take(encoder.get_mut())
             };
             if !produced.is_empty() {
-                self.writer.write_all(&produced)?;
-                state.compressed += produced.len() as u64;
+                self.emit(state, &produced)?;
             }
             if let Some(error) = self.zip64_overflow(state) {
                 return Err(self.fail(error));
@@ -853,8 +972,7 @@ impl<W: Write + Seek> ZipWriter<W> {
                 std::mem::take(encoder.get_mut())
             };
             if !produced.is_empty() {
-                self.writer.write_all(&produced)?;
-                state.compressed += produced.len() as u64;
+                self.emit(state, &produced)?;
             }
             if let Some(error) = self.zip64_overflow(state) {
                 return Err(self.fail(error));
@@ -874,8 +992,8 @@ impl<W: Write + Seek> ZipWriter<W> {
             };
 
             if written > 0 {
-                self.writer.write_all(&state.out_buf[..written])?;
-                state.compressed += written as u64;
+                let chunk = state.out_buf[..written].to_vec();
+                self.emit(state, &chunk)?;
             }
 
             if let Err(error) = status {
@@ -940,10 +1058,8 @@ impl<W: Write + Seek> ZipWriter<W> {
                     (result.bytes_written, result.status)
                 };
                 if written > 0 {
-                    self.writer
-                        .write_all(&state.out_buf[..written])
-                        .map_err(Error::Io)?;
-                    state.compressed += written as u64;
+                    let chunk = state.out_buf[..written].to_vec();
+                    self.emit(&mut state, &chunk).map_err(Error::Io)?;
                 }
                 match status {
                     Ok(MZStatus::StreamEnd) => break,
@@ -964,8 +1080,7 @@ impl<W: Write + Seek> ZipWriter<W> {
             Encoder::DeflateZlib(encoder) => {
                 let tail = encoder.finish().map_err(Error::Io)?;
                 if !tail.is_empty() {
-                    self.writer.write_all(&tail).map_err(Error::Io)?;
-                    state.compressed += tail.len() as u64;
+                    self.emit(&mut state, &tail).map_err(Error::Io)?;
                 }
             }
             #[cfg(feature = "zstd")]
@@ -974,10 +1089,16 @@ impl<W: Write + Seek> ZipWriter<W> {
                 // frame's own trailing bytes.
                 let tail = encoder.finish().map_err(Error::Io)?;
                 if !tail.is_empty() {
-                    self.writer.write_all(&tail).map_err(Error::Io)?;
-                    state.compressed += tail.len() as u64;
+                    self.emit(&mut state, &tail).map_err(Error::Io)?;
                 }
             }
+        }
+
+        // Encrypt the buffered payload now that its size is known, then emit it in one piece.
+        if let Some(pending) = state.pending.take() {
+            let sealed = self.seal_entry(&state, pending)?;
+            state.compressed = sealed.len() as u64;
+            self.writer.write_all(&sealed).map_err(Error::Io)?;
         }
 
         if let Some(error) = self.zip64_overflow(&state) {
@@ -1035,8 +1156,66 @@ impl<W: Write + Seek> ZipWriter<W> {
             zip64_offset: state.zip64_offset,
             version_made_by: version_made_by(made_by_version),
             unix_mtime: state.unix_mtime,
+            aes: state.aes,
         });
         Ok(())
+    }
+
+    /// Encrypt a finished compressed payload according to the entry's chosen scheme.
+    ///
+    /// Returns the exact bytes to write: for ZipCrypto the 12-byte header prepended to the
+    /// ciphertext; for AES the salt, verifier, ciphertext and trailing HMAC.
+    fn seal_entry(&self, state: &EntryState, pending: Pending) -> Result<Vec<u8>> {
+        let password = match (pending.scheme, &self.options.password) {
+            (_, Some(password)) => password.as_slice(),
+            // An empty password would silently produce an archive the caller cannot open.
+            (scheme, None) => {
+                return Err(Error::malformed(format!(
+                    "entry `{}` is marked for {:?} encryption but WriteOptions::password is unset",
+                    state.name, scheme
+                )))
+            }
+        };
+
+        // The header carries the real CRC-32 unless the data descriptor flag is set, in which case
+        // the high byte of the DOS time is used instead.
+        let check = if state.flags & FLAG_DATA_DESCRIPTOR != 0 {
+            crate::crypto::zipcrypto::CheckByte::DosTime(state.dos_time)
+        } else {
+            crate::crypto::zipcrypto::CheckByte::Crc(state.crc.clone().finalize())
+        };
+
+        match pending.scheme {
+            Encryption::ZipCrypto => {
+                let mut entropy = [0u8; crate::crypto::zipcrypto::HEADER_LEN - 1];
+                fill_random(&mut entropy)?;
+                Ok(crate::crypto::zipcrypto::encrypt(
+                    password,
+                    check,
+                    &entropy,
+                    &pending.payload,
+                ))
+            }
+            Encryption::Aes256 | Encryption::Aes128 => {
+                #[cfg(feature = "aes-crypto")]
+                {
+                    let strength = if pending.scheme == Encryption::Aes256 {
+                        crate::crypto::aes::Strength::Bits256
+                    } else {
+                        crate::crypto::aes::Strength::Bits128
+                    };
+                    let mut salt = vec![0u8; strength.salt_len()];
+                    fill_random(&mut salt)?;
+                    crate::crypto::aes::encrypt(password, strength, &salt, &pending.payload)
+                }
+                #[cfg(not(feature = "aes-crypto"))]
+                {
+                    Err(Error::malformed(
+                        "writing AES entries requires the `aes-crypto` feature",
+                    ))
+                }
+            }
+        }
     }
 
     fn write_central_directory(&mut self) -> Result<()> {
@@ -1161,6 +1340,14 @@ impl<W: Write + Seek> ZipWriter<W> {
         }
         // The extended-timestamp field goes in the central record too, so a reader that only
         // looks at the directory still sees the precise time.
+        if let Some((vendor_version, strength, real_method)) = record.aes {
+            extra.extend_from_slice(&crate::spec::EXTRA_WINZIP_AES.to_le_bytes());
+            extra.extend_from_slice(&(crate::spec::EXTRA_WINZIP_AES_LEN as u16).to_le_bytes());
+            extra.extend_from_slice(&vendor_version.to_le_bytes());
+            extra.extend_from_slice(b"AE");
+            extra.push(strength);
+            extra.extend_from_slice(&real_method.to_le_bytes());
+        }
         if let Some(unix) = record.unix_mtime {
             extra.extend_from_slice(&EXTRA_EXTENDED_TIMESTAMP.to_le_bytes());
             extra.extend_from_slice(&(EXTRA_TIMESTAMP_MTIME_LEN as u16).to_le_bytes());
@@ -1329,6 +1516,9 @@ fn central_record_from_entry(entry: &Entry) -> Result<CentralRecord> {
         zip64_offset: needs_zip64(offset),
         version_made_by: entry.version_made_by(),
         unix_mtime: entry.unix_mtime(),
+        aes: entry
+            .aes
+            .map(|info| (info.vendor_version, info.strength, info.actual_method)),
     })
 }
 
@@ -1371,6 +1561,16 @@ fn local_size(value: u64, zip64: bool) -> u32 {
 /// `version made by`: host system 3 (Unix) with the given version number.
 fn version_made_by(version: u16) -> u16 {
     (u16::from(HOST_UNIX) << 8) | version
+}
+
+/// Fill `buf` with cryptographically secure random bytes.
+///
+/// Used for the ZipCrypto header and the WinZip AES salt. A weak source here would be a real
+/// defect, so it comes from the OS rather than a userspace generator.
+fn fill_random(buf: &mut [u8]) -> Result<()> {
+    getrandom::fill(buf).map_err(|error| {
+        Error::malformed(format!("the system random source is unavailable: {error}"))
+    })
 }
 
 /// Build the DEFLATE encoder the active backend calls for.

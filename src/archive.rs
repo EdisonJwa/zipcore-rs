@@ -1,4 +1,6 @@
 use crate::cp437::decode_name;
+use crate::entry::AesInfo;
+use crate::entry::Compression;
 use crate::entry::Entry;
 use crate::error::{Error, Result};
 use crate::multivolume::MultiVolumeReader;
@@ -35,6 +37,12 @@ pub struct ReadOptions {
     /// directory actually is. Recovers archives with a prepended self-extractor stub.
     /// Default `true`.
     pub offset_correction: bool,
+    /// Password used to decrypt encrypted entries.
+    ///
+    /// When `None`, an encrypted entry fails with [`Error::Encrypted`]. Traditional PKWARE
+    /// encryption is supported without any feature flag; WinZip AES needs the `aes-crypto`
+    /// feature.
+    pub password: Option<Vec<u8>>,
 }
 
 impl Default for ReadOptions {
@@ -46,6 +54,7 @@ impl Default for ReadOptions {
             // merely by being read with default settings.
             max_entry_size: Some(MAX_IN_MEMORY_ENTRY),
             offset_correction: true,
+            password: None,
         }
     }
 }
@@ -62,6 +71,12 @@ impl ReadOptions {
     /// Replace the per-entry size ceiling, or remove it by passing `None`.
     pub fn with_max_entry_size(mut self, limit: Option<u64>) -> Self {
         self.max_entry_size = limit;
+        self
+    }
+
+    /// Supply a password for encrypted entries.
+    pub fn with_password(mut self, password: impl Into<Vec<u8>>) -> Self {
+        self.password = Some(password.into());
         self
     }
 }
@@ -474,15 +489,33 @@ impl<R: Read + Seek> Archive<R> {
         };
 
         if entry.is_encrypted() {
-            return Err(Error::Encrypted { entry: entry.name });
-        }
-        if !entry.compression().is_supported() {
+            // Without a password there is nothing we can do; report it clearly rather than
+            // letting the codec fail on ciphertext.
+            if options.password.is_none() {
+                return Err(Error::Encrypted { entry: entry.name });
+            }
+        } else if !entry.compression().is_supported() {
             // Read the Copy field before `name` is moved into the error.
             let method = entry.method();
             return Err(Error::UnsupportedCompression {
                 entry: entry.name,
                 method,
             });
+        }
+
+        // An encrypted entry announces method 99; the method actually used sits in its extra
+        // field, and that is what decides whether this build can decode it.
+        if entry.is_encrypted() {
+            let real = entry
+                .aes
+                .map(|info| info.actual_method)
+                .unwrap_or(entry.method());
+            if !Compression::from_method(real).is_supported() {
+                return Err(Error::UnsupportedCompression {
+                    entry: entry.name,
+                    method: real,
+                });
+            }
         }
 
         let data_start = self.payload_extent(&entry)?;
@@ -971,6 +1004,8 @@ fn parse_central_entry(
 
     // The extended-timestamp field is independent of ZIP64, so scan for it unconditionally.
     let unix_mtime = parse_extended_timestamp(extra);
+    // Likewise for WinZip AES: an entry using method 99 carries its real method in this field.
+    let aes = parse_winzip_aes(extra);
 
     if need_zip64 {
         let mut found = false;
@@ -1048,7 +1083,36 @@ fn parse_central_entry(
         version_made_by,
         comment,
         unix_mtime,
+        aes,
     })
+}
+
+/// Read the WinZip AES `0x9901` extra field.
+///
+/// Layout: version (2), vendor id (2, "AE"), strength (1), real compression method (2).
+fn parse_winzip_aes(extra: &[u8]) -> Option<AesInfo> {
+    let mut walker = SliceReader::new(extra);
+    while walker.remaining() >= 4 {
+        let id = walker.u16().ok()?;
+        let size = walker.u16().ok()? as usize;
+        let data = walker.take(size).ok()?;
+        if id != EXTRA_WINZIP_AES {
+            continue;
+        }
+        if data.len() < EXTRA_WINZIP_AES_LEN {
+            return None;
+        }
+        // The vendor id must be "AE"; anything else is some other 99-method convention.
+        if &data[2..4] != b"AE" {
+            return None;
+        }
+        return Some(AesInfo {
+            vendor_version: u16::from_le_bytes([data[0], data[1]]),
+            strength: data[4],
+            actual_method: u16::from_le_bytes([data[5], data[6]]),
+        });
+    }
+    None
 }
 
 /// Pull the modification time out of an extended-timestamp (`0x5455`) extra field, if present.

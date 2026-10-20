@@ -124,6 +124,17 @@ impl Compression {
     }
 }
 
+/// WinZip AES metadata carried by the `0x9901` extra field.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct AesInfo {
+    /// AE-1 (1) or AE-2 (2). AE-2 omits the CRC-32 from the central directory.
+    pub(crate) vendor_version: u16,
+    /// Key strength byte: 1 = 128-bit, 2 = 192-bit, 3 = 256-bit.
+    pub(crate) strength: u8,
+    /// The compression method actually used inside the encrypted payload.
+    pub(crate) actual_method: u16,
+}
+
 /// Metadata for one archive entry, taken from the central directory.
 ///
 /// The central directory is authoritative: local file headers may be zeroed out by writers
@@ -144,6 +155,8 @@ pub struct Entry {
     pub(crate) external_attrs: u32,
     pub(crate) version_made_by: u16,
     pub(crate) comment: Option<String>,
+    /// WinZip AES metadata from the `0x9901` extra field, when the entry is AES encrypted.
+    pub(crate) aes: Option<AesInfo>,
     /// Modification time from the extended-timestamp (`0x5455`) extra field, in Unix seconds.
     ///
     /// `None` when the archive recorded only a DOS timestamp, which has two-second resolution
@@ -192,7 +205,12 @@ impl Entry {
         self.method
     }
 
-    /// Whether the entry is encrypted. This reader never decrypts.
+    /// Whether the entry uses WinZip AES encryption (method 99 plus a `0x9901` extra field).
+    pub fn is_aes(&self) -> bool {
+        self.aes.is_some()
+    }
+
+    /// Whether the entry is encrypted.
     pub fn is_encrypted(&self) -> bool {
         self.flags & FLAG_ENCRYPTED != 0
     }
@@ -303,6 +321,7 @@ mod tests {
             version_made_by,
             comment: None,
             unix_mtime: None,
+            aes: None,
         }
     }
 

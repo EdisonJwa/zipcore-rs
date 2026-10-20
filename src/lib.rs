@@ -20,9 +20,13 @@
 //!
 //! Deliberately not implemented, and reported as an error rather than guessed at:
 //!
-//! * Encryption (ZipCrypto and AES). Encrypted entries fail with [`Error::Encrypted`].
-//! * Bzip2, LZMA, Zstd, PPMd and the legacy shrink/implode/reduce methods.
+//! * LZMA/XZ, PPMd and Deflate64.
+//! * Bzip2 and Zstd in a build without their feature.
+//! * The legacy shrink/implode/reduce methods.
 //! * Multi-disk (spanned) archives.
+//!
+//! Encryption *is* supported: traditional PKWARE always, and WinZip AES behind the `aes-crypto`
+//! feature. See [`ReadOptions::password`] and [`Encryption`].
 //!
 //! # Writing
 //!
@@ -82,6 +86,7 @@
 
 mod archive;
 mod cp437;
+mod crypto;
 mod dos;
 mod entry;
 mod error;
@@ -103,7 +108,7 @@ pub use crate::multivolume::MultiVolumeReader;
 pub use crate::read::ZipFile;
 pub use crate::tar::{TarEntry, TarEntryOptions, TarWriter};
 pub use crate::write::{
-    FileOptions, WriteOptions, ZipWriter, ZipWriterEntry, DEFAULT_COMPRESSION_LEVEL,
+    Encryption, FileOptions, WriteOptions, ZipWriter, ZipWriterEntry, DEFAULT_COMPRESSION_LEVEL,
 };
 
 /// Signature of the first four bytes of any non-empty ZIP archive.

@@ -1,6 +1,6 @@
 [package]
 name = "zipcore"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 rust-version = "1.70"
 license = "MIT OR Apache-2.0"
@@ -31,6 +31,15 @@ bzip2 = { version = "0.5.2", default-features = false, features = ["libbz2-rs-sy
 # Alternative DEFLATE backend behind the `deflate-zlib-rs` feature. Measured roughly 2x faster
 # than miniz_oxide for compression; see the README's performance section.
 flate2 = { version = "1.1", default-features = false, optional = true }
+# WinZip AES dependencies, all behind `aes-crypto`. These require Rust 1.85+, so the feature raises
+# the crate's MSRV when enabled; the default build is unaffected.
+aes = { version = "0.9", optional = true }
+ctr = { version = "0.10", optional = true }
+hmac = { version = "0.13", optional = true }
+sha1 = { version = "0.11", optional = true }
+pbkdf2 = { version = "0.13", optional = true }
+zeroize = { version = "1.8", optional = true }
+getrandom = "0.4"
 
 [dev-dependencies]
 # Already in the dependency graph; re-declared so integration tests can build fixtures
@@ -48,6 +57,8 @@ bzip2 = ["dep:bzip2"]
 # Swap the DEFLATE backend to zlib-rs (pure Rust, very fast). Compression only: decompression
 # stays on miniz_oxide, which is already the faster of the two for inflate.
 deflate-zlib-rs = ["dep:flate2", "flate2/zlib-rs"]
+# WinZip AES read and write. Raises the MSRV to 1.85 for this feature only.
+aes-crypto = ["dep:aes", "dep:ctr", "dep:hmac", "dep:sha1", "dep:pbkdf2", "dep:zeroize", ]
 
 # Packing tar.zst needs the codec, and nothing else in the default build does.
 [[example]]

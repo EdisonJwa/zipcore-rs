@@ -27,8 +27,8 @@ The reasons that still hold:
   reading the container is 20–35% faster. See [Performance](#performance).
 - **Split volumes and `tar.zst` in one crate**, which `zip` does not offer.
 
-What it deliberately does not do: encryption, LZMA/XZ/PPMd, Deflate64, or writing to a
-non-seekable sink. If you need those, use `zip`.
+What it deliberately does not do: LZMA/XZ/PPMd, Deflate64, or writing to a non-seekable sink.
+If you need those, use `zip`.
 
 The dependencies here are deliberately two, and both are mature and low-churn:
 
@@ -50,9 +50,9 @@ archives. The optional codecs are behind off-by-default features:
 
 ```toml
 [dependencies]
-zipcore = "0.2"                                        # Stored + Deflate only
-zipcore = { version = "0.2", features = ["zstd"] }     # + read and write method 93
-zipcore = { version = "0.2", features = ["bzip2"] }    # + read method 12
+zipcore = "0.3"                                        # Stored + Deflate only
+zipcore = { version = "0.3", features = ["zstd"] }     # + read and write method 93
+zipcore = { version = "0.3", features = ["bzip2"] }    # + read method 12
 ```
 
 Both at once is fine: `features = ["zstd", "bzip2"]`. See [Features](#features) for what each one
@@ -69,7 +69,7 @@ adequate for archive-shaped workloads. If compression throughput matters more th
 count, swap the compressor:
 
 ```toml
-zipcore = { version = "0.2", features = ["deflate-zlib-rs"] }
+zipcore = { version = "0.3", features = ["deflate-zlib-rs"] }
 ```
 
 That pulls `flate2` with the `zlib-rs` backend (still pure Rust, no C toolchain). Measured on a
@@ -150,8 +150,9 @@ to refuse writes that escape it. And raw copy (`copy_from`) is ~1.4× slower tha
 
 ## Not supported — reported as errors, never guessed at
 
-- **Encryption** (ZipCrypto and AES). Encrypted entries fail with `Error::Encrypted`; the reader
-  never returns decrypted-looking garbage.
+- Encrypted entries when no password was supplied, and AES entries in a build without the
+  `aes-crypto` feature. They fail with a named error; the reader never returns decrypted-looking
+  garbage. (Reading and writing both are supported — see [Encryption](#encryption).)
 - LZMA, Deflate64 and PPMd — and zstd or bzip2 in a build without their feature. These methods are
   *named*, not anonymous numbers, so an entry reports "method 14 (lzma)" rather than a bare id;
   `Compression::is_supported` says whether the current build can handle one.
@@ -174,6 +175,10 @@ own off-by-default feature — opting in is a deliberate trade of dependency sur
 | `zstd` | `zstd` — `zstd-safe` — `zstd-sys`, which builds C (plus `cc` and friends as build deps) | reading *and* writing method 93, and streaming zstd for `tar.zst` |
 | `bzip2` | `bzip2` — `libbz2-rs-sys`, **pure Rust** — the crate's default C backend is switched off | reading method 12 |
 | `deflate-zlib-rs` | `flate2` + `zlib-rs`, both **pure Rust** | roughly 2x faster Deflate *compression*; archive output is unchanged in size |
+| `aes-crypto` | `aes`, `ctr`, `hmac`, `sha1`, `pbkdf2`, `zeroize` (all **pure Rust**) | reading **and writing** WinZip AES-128/192/256 entries |
+
+Traditional PKWARE ("ZipCrypto") encryption needs no feature at all — `crc32fast` is already a
+dependency — and is always available for reading and writing.
 
 ```text
 cargo build --features zstd
@@ -392,6 +397,62 @@ writer.add_file("t.txt", b"x", &options)?;
 Reading it back, `Entry::unix_mtime()` returns those exact seconds, or `None` when the archive
 only recorded a DOS time.
 
+### Encryption
+
+Two schemes are supported, and the security difference between them is not small.
+
+**ZipCrypto** (traditional PKWARE) needs no feature and reads the large back-catalogue of old
+encrypted archives. It is **not secure**: the keystream is recoverable from a dozen bytes of known
+plaintext, and it has been breakable since 1996. Use it for compatibility, never for secrecy.
+
+**WinZip AES** requires the `aes-crypto` feature and is what you want for actual confidentiality.
+
+```toml
+zipcore = { version = "0.3", features = ["aes-crypto"] }
+```
+
+Reading, once a password is supplied:
+
+```rust
+use zipcore::{Archive, ReadOptions};
+
+let bytes = std::fs::read("encrypted.zip")?;
+let options = ReadOptions::default().with_password("correct horse battery staple");
+let mut archive = Archive::new_with_options(std::io::Cursor::new(bytes), options)?;
+let plain = archive.read_entry(0)?;
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+
+Writing — set the password on `WriteOptions` and the scheme per entry:
+
+```rust
+use std::io::Cursor;
+use zipcore::{Encryption, FileOptions, WriteOptions, ZipWriter};
+
+let options = WriteOptions {
+    password: Some(b"correct horse battery staple".to_vec()),
+    ..WriteOptions::default()
+};
+let mut writer = ZipWriter::new_with_options(Cursor::new(Vec::new()), options)?;
+let file = FileOptions { encryption: Some(Encryption::Aes256), ..FileOptions::default() };
+writer.add_file("secret.txt", b"payload", &file)?;
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+
+Details worth knowing:
+
+- AES entries are stored as WinZip **AE-2**: method 99 with a `0x9901` extra field, and a zero
+  CRC-32 because the HMAC authenticates the payload. Interoperates with 7-Zip, WinZip and
+  `pyzipper`; the test suite round-trips against real archives from 7-Zip 25.01 and pyzipper 0.4.0
+  in both directions.
+- AES content is **decrypted and authenticated before any of it is returned**, so a corrupted or
+  forged entry fails instead of leaking unauthenticated plaintext. This also means an encrypted
+  entry is materialised in memory rather than streamed, subject to `max_entry_size`.
+- Without `aes-crypto`, an AES entry is refused with an error naming method 99 rather than
+  returning garbage.
+- Passwords are `Vec<u8>`, not `String`: the ZIP formats encrypt raw bytes, and a password is not
+  necessarily UTF-8.
+
 ### Symbolic links
 
 `add_symlink` writes a link entry with the correct `S_IFLNK` mode. Extraction deliberately
@@ -445,7 +506,7 @@ a Windows run.
 
 ## Status
 
-Version 0.2.0. Intentionally narrow: Stored and Deflate are the only methods, because they are
+Version 0.3.0. Stored and Deflate are the only methods, because they are
 the only ones the target formats use. The issues raised in a production review have been fixed;
 what follows is the honest remaining state.
 
@@ -480,8 +541,8 @@ so the default build stays at two dependencies.
 | lzma / xz decode | 1 direct (`lzma-rust2`, pure Rust) — 9 transitive if its `xz` feature is enabled | `LzmaReader` is an ordinary `Read`, so it fits the codec path already in place. Two obstacles stand in the way: every published version needs rustc 1.85, and the ZIP method-14 header declares a dictionary size, which needs an explicit ceiling first |
 | deflate64 decode | 1 | pure Rust |
 | ppmd decode | 1 | pure Rust |
-| ZipCrypto | 1 | a broken cipher, worth decoding only for legacy archives |
-| AES (AE-1/AE-2) | 7 | RustCrypto crates, all pre-1.0 and churn-prone |
+| ~~ZipCrypto~~ | done in 0.3.0 | no new dependencies; the CRC-32 step was already available |
+| ~~AES (AE-1/AE-2)~~ | done in 0.3.0 | behind `aes-crypto`, which needs Rust 1.85 |
 
 LZMA is the one to watch: its dictionary size is declared *in the stream*, so a decoder that trusts
 it can be made to allocate a great deal. That needs an explicit ceiling before it lands.

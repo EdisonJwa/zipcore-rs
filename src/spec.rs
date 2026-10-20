@@ -34,6 +34,12 @@ pub(crate) const EXTRA_ZIP64: u16 = 0x0001;
 /// Carries real Unix seconds, so a timestamp survives at one-second resolution instead of the
 /// two-second, 1980-era DOS granularity.
 pub(crate) const EXTRA_EXTENDED_TIMESTAMP: u16 = 0x5455;
+/// Extra field header ID for WinZip AES metadata: version, vendor "AE", strength, real method.
+pub(crate) const EXTRA_WINZIP_AES: u16 = 0x9901;
+/// Method id that marks an entry as WinZip AES encrypted; the real method lives in the extra field.
+pub(crate) const METHOD_WINZIP_AES: u16 = 99;
+/// Length of the WinZip AES extra field's data: version (2), vendor (2), strength (1), method (2).
+pub(crate) const EXTRA_WINZIP_AES_LEN: usize = 7;
 /// Length of an extended-timestamp field that carries only the modification time: a 1-byte flags
 /// word plus one 4-byte Unix time.
 pub(crate) const EXTRA_TIMESTAMP_MTIME_LEN: usize = 5;

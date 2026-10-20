@@ -6,6 +6,32 @@ All notable changes to this project are documented here. The format follows
 
 Because this crate is pre-1.0, the minor version is where breaking changes land.
 
+## [0.3.0] - 2026-10-20
+
+### Added
+
+- **Encryption, both schemes.**
+  - **Traditional PKWARE ("ZipCrypto")** read and write, with **no new dependencies** — the key
+    schedule's CRC-32 step was already available. It is documented as insecure, because it is.
+  - **WinZip AES-128/192/256** (AE-2) read and write behind the `aes-crypto` feature: AES-CTR,
+    PBKDF2-HMAC-SHA1 key derivation, and HMAC-SHA1 authentication verified *before* any plaintext
+    is released.
+  - `ReadOptions::with_password` / `ReadOptions::password`, `WriteOptions::password`, and
+    `FileOptions::encryption` with the `Encryption` enum.
+  - `Entry::is_aes`. The `0x9901` extra field is parsed and re-emitted.
+- Interop test suite against real archives produced by 7-Zip 25.01 and pyzipper 0.4.0, in both
+  directions: our output is readable by both, and theirs is read by us.
+
+### Changed
+
+- `Error::Encrypted` now means "no password was supplied" rather than "unsupported".
+- Extraction of an encrypted entry is limited by `max_entry_size` on the decompressed result.
+
+### Fixed
+
+- A WinZip **AE-2** entry (zero CRC-32, as the specification requires) is no longer rejected by
+  the CRC check. Every conforming AE-2 archive would otherwise have failed to read.
+
 ## [0.2.0] - 2026-10-20
 
 ### Added
@@ -71,5 +97,6 @@ First published release.
   features.
 - A ustar `TarWriter`, including `tar.zst` via `TarWriter::new_zstd`.
 
+[0.3.0]: https://github.com/EdisonJwa/zipcore-rs/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/EdisonJwa/zipcore-rs/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/EdisonJwa/zipcore-rs/releases/tag/v0.1.0
