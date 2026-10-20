@@ -1,0 +1,40 @@
+[package]
+name = "zipcore"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.70"
+license = "MIT OR Apache-2.0"
+description = "Streaming ZIP archive reader and writer with ZIP64 support, CRC-32 verification and zip-bomb resistance"
+keywords = ["zip", "archive", "decompression", "parser"]
+categories = ["compression", "parser-implementations"]
+readme = "README.md"
+
+[dependencies]
+# Two dependencies, both chosen for stability rather than minimalism:
+#   * miniz_oxide is the pure-Rust miniz port (no C toolchain, no build script).
+#   * crc32fast is the standard CRC-32/ISO-HDLC implementation.
+# Neither is affected by the `zip` crate's mass yank, and both are mature and low-churn.
+# Exact resolved versions at the time of writing: miniz_oxide 0.9.1, crc32fast 1.5.2.
+miniz_oxide = "0.9.1"
+crc32fast = "1.5.2"
+zstd = { version = "0.14.2", default-features = false, optional = true }
+bzip2 = { version = "0.5.2", default-features = false, features = ["libbz2-rs-sys"], optional = true }
+
+[dev-dependencies]
+# Already in the dependency graph; re-declared so integration tests can build fixtures
+# (compress payloads) and compute the checksums they assert against.
+crc32fast = "1.5.2"
+miniz_oxide = "0.9.1"
+# Build fixtures whether or not the matching feature is on, so the "feature off" behaviour can be
+# tested as well as the "feature on" behaviour.
+zstd = { version = "0.14.2", default-features = false }
+bzip2 = { version = "0.5.2", default-features = false, features = ["libbz2-rs-sys"] }
+
+[features]
+zstd = ["dep:zstd"]
+bzip2 = ["dep:bzip2"]
+
+# Packing tar.zst needs the codec, and nothing else in the default build does.
+[[example]]
+name = "pack_tar_zst"
+required-features = ["zstd"]

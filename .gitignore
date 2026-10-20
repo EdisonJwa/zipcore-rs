@@ -1,0 +1,13 @@
+# Build artefacts
+/target/
+**/*.rs.bk
+
+# Local scratch: ad-hoc reproduction harnesses from the review, not part of the crate
+/review/
+
+# Editor / OS noise
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
