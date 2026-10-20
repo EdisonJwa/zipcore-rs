@@ -31,6 +31,21 @@ The security policy had fallen behind the code and contained statements that wer
 - Moved the AES-192 note next to the encryption threat model: it is read but not written, because
   the writer exposes only AES-128 and AES-256.
 
+### Fixed — a test that failed about once per 256 CI runs
+
+`zipcrypto_with_the_wrong_password_reports_wrong_password` asserted that a wrong password always
+produces `Error::WrongPassword`. ZipCrypto's password check is a **single byte**, so roughly 1 wrong
+password in 256 passes the header check by chance and is only rejected downstream, when the bytes
+fail to inflate. CI hit that case on a documentation-only commit, which is how it was found.
+
+The test now accepts either refusal, and asserts specifically that no wrong password is ever
+*accepted*. A second test runs the 2,000-attempt loop needed to hit the collision deterministically
+and requires that the collision path is actually exercised — so a regression that let colliding
+input through cannot hide behind a rerun.
+
+`SECURITY.md` documents the 1-in-256 behaviour so a caller knows to treat any failure from an
+encrypted entry as "this password did not work", rather than matching on `WrongPassword` alone.
+
 ### Documentation — CONTRIBUTING.md compiler policy
 
 The section still called 1.70 a "published promise" and described raising it as a breaking change.

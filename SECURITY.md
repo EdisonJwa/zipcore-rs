@@ -18,6 +18,7 @@ patch release; older versions are yanked only when the defect is severe.
 | ------- | ---- |
 | 0.9.1 | Fixed a Unix path-containment bypass: a pre-existing file symlink at the destination was followed by `File::create`, letting `AtomicWrite::Disabled` write through it to a file outside the extraction directory. |
 | 0.8.0 | Capped the LZMA dictionary size, widened Windows device-name detection, added mutation testing. |
+| 0.10.1 | Documentation only: corrected three false statements in this file. |
 | 0.10.0 | Removed an internal review document that had been public in the repository since the first commit. It contained no keys or credentials, but it did catalogue pre-fix defects and a local filesystem path. |
 
 ## Reporting a vulnerability
@@ -92,6 +93,13 @@ The guarantees this crate aims to hold, and how each is enforced:
   and the 12-byte header leaks a one-byte check that narrows a password guess to 1-in-256. Reading
   such archives is fine; protecting data with them is not, and this crate will not describe it as
   secure. Use the `aes-crypto` feature.
+
+- **ZipCrypto's password check is one byte.** Roughly 1 wrong password in 256 passes the header
+  check by chance and is then rejected downstream, when the bytes fail to inflate or the CRC fails.
+  Both outcomes are a refusal and never yield plausible-looking data, but a caller matching
+  specifically on `Error::WrongPassword` will occasionally see `Error::Malformed` instead. Match on
+  `Error::kind() == Kind::Password` only for the definite case; treat any failure from an encrypted
+  entry as "this password did not work". This is a property of the format, not of this crate.
 
 - **Password lifetime in caller memory.** Derived AES key material is zeroised after use
   (`zeroize`), but the password itself is passed in as `&[u8]` and is owned by the caller, so the

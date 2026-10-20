@@ -74,14 +74,51 @@ fn zipcrypto_without_a_password_reports_encrypted() {
     assert!(matches!(error, Error::Encrypted { .. }), "{error:?}");
 }
 
+/// ZipCrypto's password check is a *single byte*, so roughly 1 password in 256 passes it by chance
+/// and is only rejected later, when the "decrypted" bytes fail to inflate. Both outcomes mean the
+/// password was wrong; asserting only on the first made this test fail about once per 256 CI runs.
 #[test]
-fn zipcrypto_with_the_wrong_password_reports_wrong_password() {
+fn zipcrypto_with_the_wrong_password_is_rejected() {
     let bytes = archive_with(
         &[("s.txt", b"data", Some(Encryption::ZipCrypto))],
         Some("correct"),
     );
     let error = read_with_password(bytes, "wrong").unwrap_err();
-    assert!(matches!(error, Error::WrongPassword), "{error:?}");
+    match &error {
+        // The usual case: the header check byte gives the password away immediately.
+        Error::WrongPassword => {}
+        // The 1-in-256 case: the check byte matched, so the failure surfaces downstream. This is
+        // still a refusal, never a success, and never plausible-looking data.
+        Error::Malformed(detail) => assert!(
+            detail.contains("DEFLATE") || detail.contains("CRC") || detail.contains("size"),
+            "unexpected downstream failure: {error:?}"
+        ),
+        other => panic!("a wrong password must not be accepted: {other:?}"),
+    }
+}
+
+/// Run the wrong-password path enough times that the 1-in-256 check-byte collision is essentially
+/// certain to occur, and require that it is still always refused. This is the test that would
+/// catch a regression where a colliding check byte let unverified data through.
+#[test]
+fn zipcrypto_wrong_password_is_always_refused_never_succeeds() {
+    let mut saw_collision = false;
+    for _ in 0..2000 {
+        let bytes = archive_with(
+            &[("s.txt", b"data", Some(Encryption::ZipCrypto))],
+            Some("correct"),
+        );
+        match read_with_password(bytes, "wrong") {
+            Ok(_) => panic!("a wrong password produced plaintext"),
+            Err(Error::WrongPassword) => {}
+            Err(Error::Malformed(_)) => saw_collision = true,
+            Err(other) => panic!("unexpected error: {other:?}"),
+        }
+    }
+    assert!(
+        saw_collision,
+        "2000 attempts should have hit the 1-in-256 check-byte collision at least once;          if this fails the collision path is no longer being exercised"
+    );
 }
 
 #[test]
