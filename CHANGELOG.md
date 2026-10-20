@@ -6,7 +6,7 @@ All notable changes to this project are documented here. The format follows
 
 Because this crate is pre-1.0, the minor version is where breaking changes land.
 
-## [Unreleased]
+## [0.2.0] - 2026-10-20
 
 ### Added
 
@@ -34,6 +34,17 @@ Because this crate is pre-1.0, the minor version is where breaking changes land.
   that already holds bytes. Previously they accepted one and silently destroyed its contents by
   writing a new archive from offset 0. This is the one deliberate breaking change in this
   release.
+
+  Upgrading from 0.1.0 is a one-line change per call site:
+
+  ```rust
+  // 0.1.0
+  let mut writer = ZipWriter::new(sink);
+  // 0.2.0
+  let mut writer = ZipWriter::new(sink)?;          // or .expect("sink must be empty")
+  let mut writer = ZipWriter::new_append(sink, source)?;  // to add to an existing archive
+  ```
+
 - Extraction canonicalises the destination once per `extract_all` instead of once per entry,
   which showed up as a measurable share of extraction time.
 
@@ -60,5 +71,5 @@ First published release.
   features.
 - A ustar `TarWriter`, including `tar.zst` via `TarWriter::new_zstd`.
 
-[Unreleased]: https://github.com/EdisonJwa/zipcore-rs/compare/v0.1.0...HEAD
+[0.2.0]: https://github.com/EdisonJwa/zipcore-rs/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/EdisonJwa/zipcore-rs/releases/tag/v0.1.0

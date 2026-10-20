@@ -50,9 +50,9 @@ archives. The optional codecs are behind off-by-default features:
 
 ```toml
 [dependencies]
-zipcore = "0.1"                                        # Stored + Deflate only
-zipcore = { version = "0.1", features = ["zstd"] }     # + read and write method 93
-zipcore = { version = "0.1", features = ["bzip2"] }    # + read method 12
+zipcore = "0.2"                                        # Stored + Deflate only
+zipcore = { version = "0.2", features = ["zstd"] }     # + read and write method 93
+zipcore = { version = "0.2", features = ["bzip2"] }    # + read method 12
 ```
 
 Both at once is fine: `features = ["zstd", "bzip2"]`. See [Features](#features) for what each one
@@ -69,7 +69,7 @@ adequate for archive-shaped workloads. If compression throughput matters more th
 count, swap the compressor:
 
 ```toml
-zipcore = { version = "0.1", features = ["deflate-zlib-rs"] }
+zipcore = { version = "0.2", features = ["deflate-zlib-rs"] }
 ```
 
 That pulls `flate2` with the `zlib-rs` backend (still pure Rust, no C toolchain). Measured on a
@@ -445,7 +445,7 @@ a Windows run.
 
 ## Status
 
-Version 0.1.0. Intentionally narrow: Stored and Deflate are the only methods, because they are
+Version 0.2.0. Intentionally narrow: Stored and Deflate are the only methods, because they are
 the only ones the target formats use. The issues raised in a production review have been fixed;
 what follows is the honest remaining state.
 
