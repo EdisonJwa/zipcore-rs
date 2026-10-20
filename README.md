@@ -68,8 +68,6 @@ Reported as named errors, never guessed at or silently mis-decoded:
 
 - XZ (method 95), legacy shrink/implode/reduce decoders.
 - Truly *spanned* archives (floppy-era, entry crosses volumes). Split volumes are supported.
-- Writing to a non-seekable sink: local headers are patched by seeking back, which needs a
-  seekable target but produces the more widely compatible archive.
 
 ---
 
@@ -214,6 +212,40 @@ let out = writer.finish()?.into_inner();
 
 The previous central directory is overwritten rather than left behind, so repeated appends grow
 linearly in entry count.
+
+### Streaming to a sink that cannot seek
+
+`ZipWriter` patches each local header by seeking back, so it needs `Write + Seek`. For a socket, a
+pipe or `stdout` — anything that can only be written forwards — use `ZipStreamWriter`, which emits
+a **data descriptor** after each payload instead (general-purpose flag bit 3). That is the layout
+`zip -` and other streaming archivers produce, and 7-Zip and Python's `zipfile` both read it.
+
+```rust
+use zipcore::stream::ZipStreamWriter;
+use zipcore::FileOptions;
+
+# fn main() -> Result<(), Box<dyn std::error::Error>> {
+let mut writer = ZipStreamWriter::new(std::io::stdout())?;
+writer.add_file("hello.txt", b"hi", &FileOptions::default())?;
+
+// Payloads can also arrive in pieces.
+let mut entry = writer.start_file("log.txt", &FileOptions::default())?;
+std::io::Write::write_all(&mut entry, b"line one\n")?;
+entry.finish()?;
+
+writer.finish()?;
+# Ok(())
+# }
+```
+
+Two differences from `ZipWriter`, both structural rather than arbitrary:
+
+- **Entries of 4 GiB or more are refused**, not truncated. The sizes are not known until the
+  descriptor is written, so the ZIP64 extra field cannot be reserved in advance.
+- **Encryption is refused.** It needs the payload length before the descriptor can be written.
+
+When the sink can seek, prefer `ZipWriter`: no data descriptors are needed and the result is the
+more widely compatible layout.
 
 ### Timestamps
 
@@ -415,7 +447,6 @@ implementation — the AE-2 zero-CRC rule was found exactly that way.
 
 ## Known gaps
 
-- No non-seekable sink, so streaming to a socket or stdout is impossible.
 - A fresh compressor is allocated per entry, and a normally-written entry costs three seeks.
 - The 4 GiB write path is covered by fixtures, not by an actual multi-gigabyte write.
 - Extraction is slower than `zip` when `AtomicWrite::Enabled` (the default) is in use, because

@@ -72,3 +72,9 @@ pub(crate) const HOST_UNIX: u8 = 3;
 pub(crate) const S_IFMT: u32 = 0o170000;
 pub(crate) const S_IFDIR: u32 = 0o040000;
 pub(crate) const S_IFLNK: u32 = 0o120000;
+
+/// Version-needed value for a streamed entry: 2.0 with the data-descriptor flag.
+///
+/// 2.0 is what tools expect for Deflate with flag bit 3, and claiming a higher version makes some
+/// readers reject the archive for no reason.
+pub(crate) const ZIP_VERSION_STREAMING: u16 = 20;

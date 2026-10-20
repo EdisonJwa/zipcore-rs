@@ -84,6 +84,8 @@
 //! # Ok::<(), Box<dyn std::error::Error>>(())
 //! ```
 
+pub mod stream;
+
 mod archive;
 mod cp437;
 mod crypto;

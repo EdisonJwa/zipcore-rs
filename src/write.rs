@@ -18,11 +18,11 @@ use crate::spec::*;
 use miniz_oxide::deflate::core::CompressorOxide;
 use miniz_oxide::deflate::stream::deflate;
 use miniz_oxide::deflate::CompressionLevel;
-use miniz_oxide::{DataFormat, MZFlush, MZStatus};
+use miniz_oxide::{DataFormat, MZError, MZFlush, MZStatus};
 use std::io::{self, Read, Seek, SeekFrom, Write};
 
 /// Staging buffer for compressed output.
-const OUT_BUF_SIZE: usize = 64 * 1024;
+pub(crate) const OUT_BUF_SIZE: usize = 64 * 1024;
 
 /// The largest value a 32-bit ZIP field can hold.
 ///
@@ -200,30 +200,30 @@ impl FileOptions {
 }
 
 /// A central directory record, built up once an entry is complete.
-struct CentralRecord {
-    name: Vec<u8>,
-    flags: u16,
-    method: u16,
-    dos_date: u16,
-    dos_time: u16,
-    crc32: u32,
-    compressed_size: u64,
-    uncompressed_size: u64,
-    header_offset: u64,
-    external_attrs: u32,
-    comment: Vec<u8>,
-    zip64_sizes: bool,
-    zip64_offset: bool,
+pub(crate) struct CentralRecord {
+    pub(crate) name: Vec<u8>,
+    pub(crate) flags: u16,
+    pub(crate) method: u16,
+    pub(crate) dos_date: u16,
+    pub(crate) dos_time: u16,
+    pub(crate) crc32: u32,
+    pub(crate) compressed_size: u64,
+    pub(crate) uncompressed_size: u64,
+    pub(crate) header_offset: u64,
+    pub(crate) external_attrs: u32,
+    pub(crate) comment: Vec<u8>,
+    pub(crate) zip64_sizes: bool,
+    pub(crate) zip64_offset: bool,
     /// Host and version byte, preserved verbatim when copying an entry.
-    version_made_by: u16,
+    pub(crate) version_made_by: u16,
     /// Unix modification time carried in the extended-timestamp extra field, if any.
-    unix_mtime: Option<u64>,
+    pub(crate) unix_mtime: Option<u64>,
     /// WinZip AES metadata: (vendor version, strength byte, real method). Written back into the
     /// `0x9901` extra field of the central record.
-    aes: Option<(u16, u8, u16)>,
+    pub(crate) aes: Option<(u16, u8, u16)>,
 }
 
-enum Encoder {
+pub(crate) enum Encoder {
     Stored,
     /// miniz_oxide DEFLATE, the default backend.
     #[cfg_attr(feature = "deflate-zlib-rs", allow(dead_code))]
@@ -1308,7 +1308,7 @@ impl<W: Write + Seek> ZipWriter<W> {
     }
 
     /// Returns the number of bytes written.
-    fn write_central_record(&mut self, record: &CentralRecord) -> Result<u64> {
+    pub(crate) fn write_central_record(&mut self, record: &CentralRecord) -> Result<u64> {
         let sizes_need_zip64 = record.zip64_sizes;
         let offset_needs_zip64 = record.zip64_offset;
 
@@ -1527,7 +1527,7 @@ fn central_record_from_entry(entry: &Entry) -> Result<CentralRecord> {
 /// The cast would otherwise truncate silently, and since the header's own `name_len` field then
 /// disagrees with the bytes actually written, every reader would look for the payload at the
 /// wrong offset ??including this crate's.
-fn check_name_len(name: &[u8]) -> Result<()> {
+pub(crate) fn check_name_len(name: &[u8]) -> Result<()> {
     if name.len() > u16::MAX as usize {
         return Err(Error::malformed(format!(
             "entry name is {} bytes, which does not fit the ZIP format's 16-bit name length",
@@ -1559,7 +1559,7 @@ fn local_size(value: u64, zip64: bool) -> u32 {
 }
 
 /// `version made by`: host system 3 (Unix) with the given version number.
-fn version_made_by(version: u16) -> u16 {
+pub(crate) fn version_made_by(version: u16) -> u16 {
     (u16::from(HOST_UNIX) << 8) | version
 }
 
@@ -1575,9 +1575,189 @@ fn fill_random(buf: &mut [u8]) -> Result<()> {
     })
 }
 
+/// Drive the shared encoder once and return the bytes it produced.
+///
+/// Used by the streaming writer so that the DEFLATE backend selection (miniz_oxide or zlib-rs)
+/// lives in exactly one place.
+pub(crate) fn drive_encoder(
+    encoder: &mut Encoder,
+    out: &mut [u8],
+    data: &[u8],
+    finish: bool,
+) -> Result<Vec<u8>> {
+    let flush = if finish {
+        MZFlush::Finish
+    } else {
+        MZFlush::None
+    };
+    match encoder {
+        Encoder::Stored => Ok(data.to_vec()),
+        #[cfg_attr(feature = "deflate-zlib-rs", allow(unreachable_patterns))]
+        Encoder::Deflate(compressor) => {
+            let mut produced = Vec::new();
+            let mut remaining = data;
+            loop {
+                let result = deflate(compressor.as_mut(), remaining, out, flush);
+                produced.extend_from_slice(&out[..result.bytes_written]);
+                remaining = &remaining[result.bytes_consumed..];
+                match result.status {
+                    // Complete, or the 64 KiB output buffer filled: both mean "drain and call
+                    // again", and the input position we track tells us when to stop.
+                    Ok(MZStatus::StreamEnd) => break,
+                    Ok(_) | Err(MZError::Buf) => {
+                        if !finish && remaining.is_empty() {
+                            break;
+                        }
+                        if result.bytes_written == 0 && result.bytes_consumed == 0 {
+                            break;
+                        }
+                    }
+                    Err(error) => {
+                        return Err(Error::Compression {
+                            detail: format!("{error:?}"),
+                        })
+                    }
+                }
+            }
+            Ok(produced)
+        }
+        #[cfg(feature = "deflate-zlib-rs")]
+        Encoder::DeflateZlib(encoder) => {
+            if !data.is_empty() {
+                encoder.write_all(data).map_err(Error::Io)?;
+            }
+            if finish {
+                // `finish` consumes the encoder, but it is borrowed here; `try_finish` flushes and
+                // writes the trailer while leaving the value in place, which is all we need.
+                encoder.try_finish().map_err(Error::Io)?;
+            }
+            Ok(std::mem::take(encoder.get_mut()))
+        }
+        #[cfg(feature = "zstd")]
+        Encoder::Zstd(encoder) => {
+            if !data.is_empty() {
+                encoder.write_all(data).map_err(Error::Io)?;
+            }
+            if finish {
+                // Same borrow problem as the zlib arm: flush the frame in place instead of
+                // consuming the encoder.
+                encoder.do_finish().map_err(Error::Io)?;
+            }
+            Ok(std::mem::take(encoder.get_mut()))
+        }
+    }
+}
+
+/// Write the central directory, ZIP64 records and end-of-central-directory.
+///
+/// Shared by the seekable and streaming writers, which differ only in how entry headers are
+/// produced. `cd_offset` is the byte position where the central directory begins.
+pub(crate) fn write_archive_trailer<W: Write>(
+    sink: &mut W,
+    records: &[CentralRecord],
+    comment: Option<Vec<u8>>,
+    cd_offset: u64,
+) -> Result<()> {
+    let comment = comment.unwrap_or_default();
+    if comment.len() > u16::MAX as usize {
+        return Err(Error::malformed("archive comment too long"));
+    }
+
+    let mut cd = Vec::new();
+    for record in records {
+        write_central_record_into(&mut cd, record)?;
+    }
+    sink.write_all(&cd).map_err(Error::Io)?;
+    let cd_size = cd.len() as u64;
+    let count = records.len() as u64;
+
+    let needs_zip64 = count > u16::MAX as u64 || needs_zip64(cd_offset) || needs_zip64(cd_size);
+    if needs_zip64 {
+        let zip64_eocd_offset = cd_offset + cd_size;
+        let mut record = Vec::with_capacity(ZIP64_EOCD_MIN_LEN);
+        record.extend_from_slice(&ZIP64_EOCD_SIG.to_le_bytes());
+        record.extend_from_slice(&44u64.to_le_bytes());
+        record.extend_from_slice(&version_made_by(45).to_le_bytes());
+        record.extend_from_slice(&45u16.to_le_bytes());
+        record.extend_from_slice(&0u32.to_le_bytes()); // this disk
+        record.extend_from_slice(&0u32.to_le_bytes()); // disk with the central directory
+        record.extend_from_slice(&count.to_le_bytes());
+        record.extend_from_slice(&count.to_le_bytes());
+        record.extend_from_slice(&cd_size.to_le_bytes());
+        record.extend_from_slice(&cd_offset.to_le_bytes());
+        sink.write_all(&record).map_err(Error::Io)?;
+
+        let mut locator = Vec::with_capacity(crate::spec::ZIP64_LOCATOR_LEN);
+        locator.extend_from_slice(&ZIP64_LOCATOR_SIG.to_le_bytes());
+        locator.extend_from_slice(&0u32.to_le_bytes()); // disk with the ZIP64 EOCD
+        locator.extend_from_slice(&zip64_eocd_offset.to_le_bytes());
+        locator.extend_from_slice(&1u32.to_le_bytes()); // total disks
+        sink.write_all(&locator).map_err(Error::Io)?;
+    }
+
+    let mut eocd = Vec::with_capacity(EOCD_LEN + comment.len());
+    eocd.extend_from_slice(&EOCD_SIG.to_le_bytes());
+    eocd.extend_from_slice(&0u16.to_le_bytes()); // this disk
+    eocd.extend_from_slice(&0u16.to_le_bytes()); // disk with the central directory
+    let stored_count = if needs_zip64 { u16::MAX } else { count as u16 };
+    eocd.extend_from_slice(&stored_count.to_le_bytes());
+    eocd.extend_from_slice(&stored_count.to_le_bytes());
+    eocd.extend_from_slice(&local_size(cd_size, needs_zip64).to_le_bytes());
+    eocd.extend_from_slice(&local_size(cd_offset, needs_zip64).to_le_bytes());
+    eocd.extend_from_slice(&(comment.len() as u16).to_le_bytes());
+    eocd.extend_from_slice(&comment);
+    sink.write_all(&eocd).map_err(Error::Io)?;
+    Ok(())
+}
+
+/// Serialise one central directory record into `out`.
+fn write_central_record_into(out: &mut Vec<u8>, record: &CentralRecord) -> Result<()> {
+    let sizes_need_zip64 = record.zip64_sizes;
+    let offset_needs_zip64 = record.zip64_offset;
+    let mut extra = Vec::new();
+    let zip64_len = usize::from(sizes_need_zip64) * 16 + usize::from(offset_needs_zip64) * 8;
+    if zip64_len > 0 {
+        extra.extend_from_slice(&EXTRA_ZIP64.to_le_bytes());
+        extra.extend_from_slice(&(zip64_len as u16).to_le_bytes());
+        if sizes_need_zip64 {
+            extra.extend_from_slice(&record.uncompressed_size.to_le_bytes());
+            extra.extend_from_slice(&record.compressed_size.to_le_bytes());
+        }
+        if offset_needs_zip64 {
+            extra.extend_from_slice(&record.header_offset.to_le_bytes());
+        }
+    }
+    let version = if sizes_need_zip64 || offset_needs_zip64 {
+        45u16
+    } else {
+        20u16
+    };
+    out.extend_from_slice(&CENTRAL_DIR_SIG.to_le_bytes());
+    out.extend_from_slice(&record.version_made_by.to_le_bytes());
+    out.extend_from_slice(&version.to_le_bytes());
+    out.extend_from_slice(&record.flags.to_le_bytes());
+    out.extend_from_slice(&record.method.to_le_bytes());
+    out.extend_from_slice(&record.dos_time.to_le_bytes());
+    out.extend_from_slice(&record.dos_date.to_le_bytes());
+    out.extend_from_slice(&record.crc32.to_le_bytes());
+    out.extend_from_slice(&local_size(record.compressed_size, sizes_need_zip64).to_le_bytes());
+    out.extend_from_slice(&local_size(record.uncompressed_size, sizes_need_zip64).to_le_bytes());
+    out.extend_from_slice(&(record.name.len() as u16).to_le_bytes());
+    out.extend_from_slice(&(extra.len() as u16).to_le_bytes());
+    out.extend_from_slice(&(record.comment.len() as u16).to_le_bytes());
+    out.extend_from_slice(&0u16.to_le_bytes());
+    out.extend_from_slice(&0u16.to_le_bytes());
+    out.extend_from_slice(&record.external_attrs.to_le_bytes());
+    out.extend_from_slice(&local_size(record.header_offset, offset_needs_zip64).to_le_bytes());
+    out.extend_from_slice(&record.name);
+    out.extend_from_slice(&extra);
+    out.extend_from_slice(&record.comment);
+    Ok(())
+}
+
 /// Build the DEFLATE encoder the active backend calls for.
 #[cfg(feature = "deflate-zlib-rs")]
-fn new_deflate_encoder(level: u8) -> Encoder {
+pub(crate) fn new_deflate_encoder(level: u8) -> Encoder {
     let level = level.min(10);
     Encoder::DeflateZlib(flate2::write::DeflateEncoder::new(
         Vec::with_capacity(OUT_BUF_SIZE),
@@ -1587,7 +1767,7 @@ fn new_deflate_encoder(level: u8) -> Encoder {
 
 /// Build the DEFLATE encoder the active backend calls for.
 #[cfg(not(feature = "deflate-zlib-rs"))]
-fn new_deflate_encoder(level: u8) -> Encoder {
+pub(crate) fn new_deflate_encoder(level: u8) -> Encoder {
     Encoder::Deflate(new_compressor(level))
 }
 

@@ -6,6 +6,26 @@ All notable changes to this project are documented here. The format follows
 
 Because this crate is pre-1.0, the minor version is where breaking changes land.
 
+## [0.7.0] - 2026-10-20
+
+### Added
+
+- **`stream::ZipStreamWriter`** — write an archive to a sink that cannot seek, such as a socket,
+  a pipe or `stdout`. It sets general-purpose flag bit 3 and emits a **data descriptor** after each
+  payload instead of patching the local header by seeking back, which is the layout `zip -` and
+  other streaming archivers produce. Verified readable by 7-Zip 25.01 and Python's `zipfile`.
+- `ZipStreamWriter::start_file` for payloads that arrive in pieces.
+- The central-directory and trailer writing is now shared between both writers
+  (`write_archive_trailer`), so the ZIP64 and EOCD logic exists once.
+
+### Limitations, by construction
+
+- Entries at or past 4 GiB are **rejected** rather than truncated: the sizes are unknown until the
+  descriptor is written, so the ZIP64 extra field cannot be reserved in advance.
+- Encryption is **refused**: it needs the payload length before the descriptor exists.
+- Use `ZipWriter` when the sink can seek; no data descriptors are needed and the output is the
+  more widely compatible layout.
+
 ## [0.6.0] - 2026-10-20
 
 ### Added
@@ -173,6 +193,7 @@ First published release.
   features.
 - A ustar `TarWriter`, including `tar.zst` via `TarWriter::new_zstd`.
 
+[0.7.0]: https://github.com/EdisonJwa/zipcore-rs/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/EdisonJwa/zipcore-rs/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/EdisonJwa/zipcore-rs/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/EdisonJwa/zipcore-rs/compare/v0.3.0...v0.4.0
