@@ -6,6 +6,26 @@ All notable changes to this project are documented here. The format follows
 
 Because this crate is pre-1.0, the minor version is where breaking changes land.
 
+## [0.9.1] - 2026-10-20
+
+### Security
+
+- **Fixed a path-containment bypass on Unix.** A pre-existing *file symlink* at the destination
+  path was followed by `File::create`, so with `AtomicWrite::Disabled` an archive could write
+  through it to a file outside the extraction directory. The guard canonicalised only the parent
+  directory, which is still inside the tree and therefore passed. It now canonicalises the full
+  destination path as well.
+
+  `AtomicWrite::Enabled` (the default) was not exploitable — `rename` replaces the symlink rather
+  than following it — which is why this was invisible on Windows and in the default configuration.
+  Found by CI running the test suite on Linux, after the equivalent Windows junction test passed.
+
+- The regression test now covers both atomic modes, since only the non-default one exposed the bug.
+
+### Fixed
+
+- CI's `rust-cache` key contained commas for multi-feature matrix entries, which the action rejects.
+
 ## [0.9.0] - 2026-10-20
 
 ### Fixed
@@ -257,6 +277,7 @@ First published release.
   features.
 - A ustar `TarWriter`, including `tar.zst` via `TarWriter::new_zstd`.
 
+[0.9.1]: https://github.com/EdisonJwa/zipcore-rs/compare/v0.9.0...v0.9.1
 [0.9.0]: https://github.com/EdisonJwa/zipcore-rs/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/EdisonJwa/zipcore-rs/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/EdisonJwa/zipcore-rs/compare/v0.6.0...v0.7.0

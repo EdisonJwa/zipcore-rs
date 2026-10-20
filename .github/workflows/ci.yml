@@ -33,7 +33,9 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
-          key: features-${{ matrix.features }}
+          # Commas are invalid in a cache key, and the matrix has entries such as
+          # "zstd,bzip2,deflate-zlib-rs,aes-crypto".
+          key: features-${{ replace(matrix.features, ',', '-') }}
       - name: Build and test
         run: |
           if [ -z "${{ matrix.features }}" ]; then

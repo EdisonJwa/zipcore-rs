@@ -468,6 +468,10 @@ cargo run --example kitchen_sink --features aes-crypto
 
 It is executed by CI, so the examples cannot drift from the API.
 
+`scripts/check-all.ps1` runs everything CI runs, with the same flags. `scripts/test-on-linux.sh`
+runs the suite under WSL or Linux — path-containment and symlink behaviour differ per platform, and
+a security fix was once verified on Windows while being broken on Unix.
+
 ## Testing
 
 256 tests across the feature configurations, plus doctests, including a deterministic mutation suite. CI runs the matrix on Linux, including

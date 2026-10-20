@@ -363,6 +363,15 @@ impl Archive<MultiVolumeReader> {
     }
 }
 
+/// Render an entry path relative to the destination, for error messages.
+fn display_entry(out_path: &Path, dest_dir: &Path) -> String {
+    out_path
+        .strip_prefix(dest_dir)
+        .unwrap_or(out_path)
+        .to_string_lossy()
+        .into_owned()
+}
+
 impl<R: Read + Seek> Archive<R> {
     /// Parse an archive from any seekable reader.
     pub fn new(reader: R) -> Result<Self> {
@@ -770,9 +779,7 @@ impl<R: Read + Seek> Archive<R> {
     /// Refuse a destination path that escapes `dest_dir` once the filesystem has resolved it.
     ///
     /// Name sanitisation cannot see a pre-existing junction or symlink inside the destination,
-    /// so the containing directory is canonicalised and compared against the canonical
-    /// destination root. The components after it are already known to be ordinary relative
-    /// names, so this is enough to keep every write inside the tree.
+    /// so paths are canonicalised and compared against the canonical destination root.
     fn guard_containment(&self, dest_dir: &Path, out_path: &Path) -> Result<PathBuf> {
         let root = match fs::canonicalize(dest_dir) {
             Ok(root) => root,
@@ -797,6 +804,18 @@ impl<R: Read + Seek> Archive<R> {
             Some(parent) => parent,
             None => return Ok(out_path.to_path_buf()),
         };
+        // A pre-existing *file* symlink at the destination is followed by `File::create`, which
+        // would write through it to wherever it points. Canonicalising the final path catches
+        // that; the parent check below does not, because the parent is still inside the tree.
+        // `canonicalize` fails when the target does not exist, which is the ordinary case.
+        if let Ok(resolved) = fs::canonicalize(out_path) {
+            if !resolved.starts_with(root) {
+                return Err(Error::UnsafePath {
+                    entry: display_entry(out_path, dest_dir),
+                    reason: "resolves outside the destination directory",
+                });
+            }
+        }
         let resolved = match fs::canonicalize(parent) {
             Ok(resolved) => resolved,
             // The parent does not exist yet; `create_dir_all` will create it under a path that
@@ -805,11 +824,7 @@ impl<R: Read + Seek> Archive<R> {
         };
         if !resolved.starts_with(root) {
             return Err(Error::UnsafePath {
-                entry: out_path
-                    .strip_prefix(dest_dir)
-                    .unwrap_or(out_path)
-                    .to_string_lossy()
-                    .into_owned(),
+                entry: display_entry(out_path, dest_dir),
                 reason: "resolves outside the destination directory",
             });
         }
