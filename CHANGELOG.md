@@ -6,6 +6,25 @@ All notable changes to this project are documented here. The format follows
 
 Because this crate is pre-1.0, the minor version is where breaking changes land.
 
+## [0.10.2] - 2026-10-21
+
+### Fixed — the ZipCrypto collision test was itself wrong
+
+The de-flaking added in 0.10.1 asserted that a colliding check byte surfaces as `Error::Malformed`.
+It can also surface as `SizeMismatch` (the garbage inflates short) or `CrcMismatch` (it happens to
+inflate to the right length), depending on which integrity check runs first. CI hit the
+`SizeMismatch` case on the `deflate-zlib-rs` job.
+
+The test now accepts any integrity refusal and asserts only the invariant that matters: a wrong
+password never returns `Ok` and never yields data. Instrumenting the loop showed 9 collisions in one
+2,000-iteration run, so the path really is exercised rather than being trivially satisfied.
+
+### Changed — GitHub Actions
+
+- `actions/checkout` 4 → 7 and `actions/upload-artifact` 4 → 7, via the dependabot pulls. Both
+  require Actions Runner ≥ 2.327.1; the workflows only use GitHub-hosted `ubuntu-latest`, which
+  satisfies that. The upgraded run is green.
+
 ## [0.10.1] - 2026-10-20
 
 ### Documentation — SECURITY.md rewritten
@@ -409,6 +428,7 @@ First published release.
   features.
 - A ustar `TarWriter`, including `tar.zst` via `TarWriter::new_zstd`.
 
+[0.10.2]: https://github.com/EdisonJwa/zipcore-rs/compare/v0.10.1...v0.10.2
 [0.10.1]: https://github.com/EdisonJwa/zipcore-rs/compare/v0.10.0...v0.10.1
 [0.10.0]: https://github.com/EdisonJwa/zipcore-rs/compare/v0.9.1...v0.10.0
 [0.9.1]: https://github.com/EdisonJwa/zipcore-rs/compare/v0.9.0...v0.9.1

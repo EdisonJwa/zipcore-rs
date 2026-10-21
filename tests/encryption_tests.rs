@@ -100,6 +100,11 @@ fn zipcrypto_with_the_wrong_password_is_rejected() {
 /// Run the wrong-password path enough times that the 1-in-256 check-byte collision is essentially
 /// certain to occur, and require that it is still always refused. This is the test that would
 /// catch a regression where a colliding check byte let unverified data through.
+///
+/// The collision surfaces as whichever integrity check runs first on the garbage the wrong key
+/// produced: `Malformed` when it fails to inflate, `SizeMismatch` when it inflates short, and
+/// `CrcMismatch` if it happens to inflate to the right length. All are refusals. The invariant is
+/// that it never returns `Ok` and never yields data.
 #[test]
 fn zipcrypto_wrong_password_is_always_refused_never_succeeds() {
     let mut saw_collision = false;
@@ -109,15 +114,19 @@ fn zipcrypto_wrong_password_is_always_refused_never_succeeds() {
             Some("correct"),
         );
         match read_with_password(bytes, "wrong") {
-            Ok(_) => panic!("a wrong password produced plaintext"),
+            Ok(plain) => panic!("a wrong password produced plaintext: {plain:?}"),
             Err(Error::WrongPassword) => {}
-            Err(Error::Malformed(_)) => saw_collision = true,
-            Err(other) => panic!("unexpected error: {other:?}"),
+            // The check byte matched by chance; a downstream integrity check caught it instead.
+            Err(Error::Malformed(_) | Error::SizeMismatch { .. } | Error::CrcMismatch { .. }) => {
+                saw_collision = true
+            }
+            Err(other) => panic!("a wrong password produced an unexpected outcome: {other:?}"),
         }
     }
     assert!(
         saw_collision,
-        "2000 attempts should have hit the 1-in-256 check-byte collision at least once;          if this fails the collision path is no longer being exercised"
+        "2000 attempts should have hit the 1-in-256 check-byte collision at least once; \
+         if this fails the collision path is no longer being exercised"
     );
 }
 
