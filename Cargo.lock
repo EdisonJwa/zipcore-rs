@@ -332,7 +332,7 @@ checksum = "e13084392c5e4bc371903e2935a5eaeed24905a7511356b883835e18a78f6879"
 
 [[package]]
 name = "zipcore"
-version = "0.10.1"
+version = "0.10.2"
 dependencies = [
  "aes",
  "bzip2",
